@@ -6,85 +6,93 @@
 #include <netinet/in.h>
 #include <sys/types.h>
 
-int main()
+int main ()
 {
 	struct sockaddr_in server;
-
 	memset(&server, 0, sizeof(server));
 
+	//Socket Creation
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-	char buffer [100];
-	ssize_t sent;
 
 	if (sockfd < 0)
 	{
-		perror("socket");
+		perror("Socket");
 		return 1;
 	}
 
 	server.sin_family = AF_INET;
-	server.sin_port = htons(8080);
+	server.sin_port = htons(11724);
 	inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
 
-	if ((bind(sockfd, (struct sockaddr *)&server, sizeof(server)) < 0))
+	//Bind
+	if ((bind(sockfd, (struct sockaddr *)&server, sizeof(server))) < 0)
 	{
-		perror("bind");
-		return 1;
-	}
-	
-	if (listen(sockfd,5) < 0)
-	{
-		perror("listen");
+		perror("Bind");
 		return 1;
 	}
 
+	//Listen
+	if ((listen(sockfd, 5)) < 0)
+	{
+		perror("Listen");
+		return 1;
+	}
+
+	//Accept
 	int connfd = accept(sockfd, NULL, NULL);
 
 	if (connfd < 0)
 	{
-		perror("accept");
+		perror("Accept");
 		return 1;
 	}
 
+	ssize_t sent;
+	ssize_t receive;
+
+	//char message [] = "Hello\n";
+	char buffer [100];
+
 	while(1)
 	{
-		ssize_t received = recv(connfd, buffer, sizeof(buffer) - 1, 0);
-		
-		if (received > 0)
+		receive = recv(connfd, buffer, sizeof(buffer) - 1, 0);
+
+		if (receive > 0)
 		{
-			buffer[received] = '\0';
+			buffer[receive] = '\0';
+			printf("Client: %s", buffer);
 			
-			printf("Received %zd bytes from client\n", received);
-			printf("Message: %s\n", buffer);
-			
-			sent = send(connfd, buffer, received,0);
-			
-			if(sent < 0)
+			sent = send(connfd, buffer, receive, 0);
+
+			if (sent > 0)
 			{
-				perror("send");
-				break;
+				printf("Received Bytes:%zd\n", receive);
+				printf("Sent Bytes:%zd\n", sent);
+			}
+			else if (sent == 0)
+			{
+				printf("Zero bytes Sent!\n");
 			}
 			else
 			{
-				printf("%zd bytes sent\n", sent);
+				perror("Send");
+				break;
 			}
 		}
 		
-		else if (received == 0)
+		else if (receive == 0)
 		{
-			printf("Client has stopped Sending\n");
+			printf("Client Stopped Sending\n");
 			break;
 		}
 		
 		else
 		{
-			perror("recv");
+			perror("Receive");
 			break;
 		}
-	}
-
-	close(connfd);
-	close(sockfd);
-
+}
+	close (sockfd);
+	close (connfd);
 	return 0;
 }
