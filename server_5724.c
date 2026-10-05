@@ -11,6 +11,7 @@
 #include "config_5724.h"
 
 #define MAX_CLIENTS 16
+#define MAX_ROOMS 16
 #define COMMAND_SIZE 1024
 #define OUTPUT_SIZE 4096
 
@@ -20,6 +21,7 @@ typedef struct
     int fd;
     int registered;
     int close_after_output;
+    int drop_pending;
 
     char username[32];
 
@@ -31,6 +33,19 @@ typedef struct
 } Client;
 
 static Client clients[MAX_CLIENTS];
+
+typedef struct
+{
+    int active;
+    char name[32];
+    unsigned char members[MAX_CLIENTS];
+} Room;
+
+static Room rooms[MAX_ROOMS];
+
+static void remove_client_from_rooms(const Client *client);
+
+static void announce_presence(const char *event, const char *username);
 
 /* Prevent socket operations from blocking the entire server. */
 static int set_nonblocking(int fd)
@@ -45,20 +60,36 @@ static int set_nonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-/* Release the connection and clear its registration and buffers. */
+/* Clear the record before announcing departure, preventing duplicate
+   notifications or routing to a connection that is already closed. */
 static void disconnect_client(Client *client)
 {
+    if (client->fd == -1)
+    {
+        return;
+    }
+
+    int was_registered = client->registered;
+    char username[sizeof(client->username)];
+    memcpy(username, client->username, sizeof(username));
+
     printf("Disconnected: %s (fd=%d)\n",
-           client->registered ? client->username : "unregistered",
-           client->fd);
+           was_registered ? username : "unregistered", client->fd);
 
     if (close(client->fd) == -1)
     {
         perror("close client");
     }
 
+    remove_client_from_rooms(client);
+
     memset(client, 0, sizeof(*client));
     client->fd = -1;
+
+    if (was_registered)
+    {
+        announce_presence("LEAVE", username);
+    }
 }
 
 /* Queue protocol output for transmission when the socket is writable. */
@@ -76,6 +107,55 @@ static int queue_response(Client *client, const char *response)
     client->output_length += length;
 
     return 0;
+}
+
+/* The brief requires presence notifications but does not define their syntax.
+   Our documented choice is MSG JOIN <name> and MSG LEAVE <name>, without NID. */
+static void announce_presence(const char *event, const char *username)
+{
+    char notification[80];
+    int written = snprintf(notification, sizeof(notification),
+                           "MSG %s %s\n", event, username);
+    if (written < 0 || (size_t)written >= sizeof(notification))
+    {
+        return;
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        Client *recipient = &clients[i];
+        if (recipient->fd == -1 || !recipient->registered ||
+            recipient->close_after_output || recipient->drop_pending)
+        {
+            continue;
+        }
+
+        if (queue_response(recipient, notification) == -1)
+        {
+            /* Defer cleanup so every recipient sees this event before
+               any leave events caused by output-queue overflow. */
+            recipient->drop_pending = 1;
+        }
+    }
+}
+
+/* Clearing a dropped client can queue a LEAVE event and expose another
+   full queue. Repeat until no marked connections remain; no recursion. */
+static void remove_dropped_clients(void)
+{
+    int removed;
+    do
+    {
+        removed = 0;
+        for (int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if (clients[i].fd != -1 && clients[i].drop_pending)
+            {
+                disconnect_client(&clients[i]);
+                removed = 1;
+            }
+        }
+    } while (removed);
 }
 
 /* Preserve bytes that send() could not transmit yet. */
@@ -155,6 +235,243 @@ static int username_taken(const char *name)
     return 0;
 }
 
+/* Room membership uses client-array indexes, so disconnect cleanup must
+   clear membership before a client slot can be reused. */
+static int find_room(const char *name)
+{
+    for (int i = 0; i < MAX_ROOMS; i++)
+    {
+        if (rooms[i].active && strcmp(rooms[i].name, name) == 0)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void remove_empty_room(int room_index)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (rooms[room_index].members[i])
+        {
+            return;
+        }
+    }
+    memset(&rooms[room_index], 0, sizeof(rooms[room_index]));
+}
+
+static void remove_client_from_rooms(const Client *client)
+{
+    int slot = (int)(client - clients);
+    for (int i = 0; i < MAX_ROOMS; i++)
+    {
+        if (rooms[i].active)
+        {
+            rooms[i].members[slot] = 0;
+            remove_empty_room(i);
+        }
+    }
+}
+
+/* JOIN creates the room if needed, then marks this client's membership.
+   Room and user names share a namespace to keep future file targets unique. */
+static int handle_join(Client *client, const char *name)
+{
+    if (!valid_username(name))
+    {
+        return queue_response(client,
+            "ERR 015 INVALID_ROOM_NAME " NODE_ID "\n");
+    }
+
+    /* A shared user/room namespace avoids ambiguous SENDFILE targets later. */
+    if (username_taken(name))
+    {
+        return queue_response(client,
+            "ERR 014 NAME_CONFLICT " NODE_ID "\n");
+    }
+
+    int room_index = find_room(name);
+    if (room_index == -1)
+    {
+        for (int i = 0; i < MAX_ROOMS; i++)
+        {
+            if (!rooms[i].active)
+            {
+                room_index = i;
+                break;
+            }
+        }
+        if (room_index == -1)
+        {
+            return queue_response(client,
+                "ERR 017 ROOM_LIMIT_REACHED " NODE_ID "\n");
+        }
+
+        memset(&rooms[room_index], 0, sizeof(rooms[room_index]));
+        rooms[room_index].active = 1;
+        memcpy(rooms[room_index].name, name, strlen(name) + 1);
+    }
+
+    /* Joining an existing membership is harmless and returns the same OK. */
+    rooms[room_index].members[client - clients] = 1;
+    char response[160];
+    snprintf(response, sizeof(response), "OK JOINED %s %s\n", name, NODE_ID);
+    return queue_response(client, response);
+}
+
+/* LEAVE affects this room only. The final member leaving deletes the room. */
+static int handle_leave(Client *client, const char *name)
+{
+    if (!valid_username(name))
+    {
+        return queue_response(client,
+            "ERR 015 INVALID_ROOM_NAME " NODE_ID "\n");
+    }
+
+    int room_index = find_room(name);
+    if (room_index == -1)
+    {
+        return queue_response(client,
+            "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
+    }
+
+    int slot = (int)(client - clients);
+    if (!rooms[room_index].members[slot])
+    {
+        return queue_response(client,
+            "ERR 016 NOT_ROOM_MEMBER " NODE_ID "\n");
+    }
+
+    char response[160];
+    snprintf(response, sizeof(response), "OK LEFT %s %s\n", name, NODE_ID);
+    rooms[room_index].members[slot] = 0;
+    remove_empty_room(room_index);
+    return queue_response(client, response);
+}
+
+/* ROOMS is one newline-terminated wire response, including an empty list. */
+static int handle_rooms(Client *client)
+{
+    char response[1024];
+    int written = snprintf(response, sizeof(response), "OK ROOMS ");
+    if (written < 0 || (size_t)written >= sizeof(response))
+    {
+        return -1;
+    }
+    size_t used = (size_t)written;
+    int first = 1;
+
+    for (int i = 0; i < MAX_ROOMS; i++)
+    {
+        if (!rooms[i].active)
+        {
+            continue;
+        }
+        written = snprintf(response + used, sizeof(response) - used,
+                               "%s%s", first ? "" : ",", rooms[i].name);
+        if (written < 0 || (size_t)written >= sizeof(response) - used)
+        {
+            return -1;
+        }
+        used += (size_t)written;
+        first = 0;
+    }
+
+    written = snprintf(response + used, sizeof(response) - used,
+                           " %s\n", NODE_ID);
+    if (written < 0 || (size_t)written >= sizeof(response) - used)
+    {
+        return -1;
+    }
+    return queue_response(client, response);
+}
+
+/* Split only the room name; retain spaces in the remaining message text.
+   The sender must belong to the room and receives a copy as a member. */
+static int handle_room_message(Client *sender, const char *arguments)
+{
+    const char *separator = strchr(arguments, ' ');
+    if (separator == NULL || separator == arguments)
+    {
+        return queue_response(sender,
+            "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+    }
+
+    char name[32];
+    size_t name_length = (size_t)(separator - arguments);
+    if (name_length >= sizeof(name))
+    {
+        return queue_response(sender,
+            "ERR 015 INVALID_ROOM_NAME " NODE_ID "\n");
+    }
+    memcpy(name, arguments, name_length);
+    name[name_length] = '\0';
+    if (!valid_username(name))
+    {
+        return queue_response(sender,
+            "ERR 015 INVALID_ROOM_NAME " NODE_ID "\n");
+    }
+
+    const char *message = separator + 1;
+    if (message[0] == '\0')
+    {
+        return queue_response(sender,
+            "ERR 011 EMPTY_MESSAGE " NODE_ID "\n");
+    }
+
+    int room_index = find_room(name);
+    if (room_index == -1)
+    {
+        return queue_response(sender,
+            "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
+    }
+    if (!rooms[room_index].members[sender - clients])
+    {
+        return queue_response(sender,
+            "ERR 016 NOT_ROOM_MEMBER " NODE_ID "\n");
+    }
+
+    char forwarded[1200];
+    int written = snprintf(forwarded, sizeof(forwarded),
+                           "MSG ROOM %s %s %s\n", name,
+                           sender->username, message);
+    if (written < 0 || (size_t)written >= sizeof(forwarded))
+    {
+        return -1;
+    }
+
+    /* All members, including the sender, receive the room message.
+       Reserve the sender's acknowledgement and message together. */
+    const char acknowledgement[] = "OK SENT " NODE_ID "\n";
+    if ((size_t)written + sizeof(acknowledgement) - 1 >
+        sizeof(sender->output) - sender->output_length)
+    {
+        return -1;
+    }
+    if (queue_response(sender, acknowledgement) == -1)
+    {
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        Client *recipient = &clients[i];
+        if (!rooms[room_index].members[i] || recipient->fd == -1 ||
+            !recipient->registered || recipient->close_after_output ||
+            recipient->drop_pending)
+        {
+            continue;
+        }
+        if (queue_response(recipient, forwarded) == -1)
+        {
+            /* Defer cleanup until routing finishes; cleanup may delete rooms. */
+            recipient->drop_pending = 1;
+        }
+    }
+    return 0;
+}
+
 /* Build the required single-line, comma-separated user-list response. */
 static int handle_list(Client *client)
 {
@@ -173,7 +490,8 @@ static int handle_list(Client *client)
 
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
-        if (clients[i].fd == -1 || !clients[i].registered)
+        if (clients[i].fd == -1 || !clients[i].registered ||
+            clients[i].close_after_output || clients[i].drop_pending)
         {
             continue;
         }
@@ -250,6 +568,7 @@ static int handle_broadcast(Client *sender, const char *message)
         if (recipient->fd == -1 ||
             !recipient->registered ||
             recipient->close_after_output ||
+            recipient->drop_pending ||
             recipient == sender)
         {
             continue;
@@ -263,6 +582,100 @@ static int handle_broadcast(Client *sender, const char *message)
     }
 
     return 0;
+}
+
+/* Route a private message to one registered user, preserving message spaces. */
+static int handle_private(Client *sender, const char *arguments)
+{
+    const char *separator = strchr(arguments, ' ');
+    if (separator == NULL || separator == arguments)
+    {
+        return queue_response(sender,
+            "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+    }
+
+    size_t name_length = (size_t)(separator - arguments);
+    char target[sizeof(sender->username)];
+    if (name_length >= sizeof(target))
+    {
+        return queue_response(sender,
+            "ERR 006 INVALID_USERNAME " NODE_ID "\n");
+    }
+
+    memcpy(target, arguments, name_length);
+    target[name_length] = '\0';
+    if (!valid_username(target))
+    {
+        return queue_response(sender,
+            "ERR 006 INVALID_USERNAME " NODE_ID "\n");
+    }
+
+    const char *message = separator + 1;
+    if (message[0] == '\0')
+    {
+        return queue_response(sender,
+            "ERR 011 EMPTY_MESSAGE " NODE_ID "\n");
+    }
+
+    Client *recipient = NULL;
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].fd != -1 &&
+            clients[i].registered &&
+            !clients[i].close_after_output &&
+            !clients[i].drop_pending &&
+            strcmp(clients[i].username, target) == 0)
+        {
+            recipient = &clients[i];
+            break;
+        }
+    }
+
+    if (recipient == NULL)
+    {
+        return queue_response(sender,
+            "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+    }
+
+    char forwarded[1200];
+    int written = snprintf(forwarded, sizeof(forwarded),
+                           "MSG PRIV %s %s\n", sender->username, message);
+    if (written < 0 || (size_t)written >= sizeof(forwarded))
+    {
+        return -1;
+    }
+
+    const char acknowledgement[] = "OK SENT " NODE_ID "\n";
+    size_t ack_length = sizeof(acknowledgement) - 1;
+    size_t message_length = (size_t)written;
+
+    /* Reserve capacity for both outputs before accepting the message.
+       Self-messaging is allowed: both lines then share the same queue. */
+    if (ack_length > sizeof(sender->output) - sender->output_length)
+    {
+        return -1;
+    }
+
+    size_t required = message_length;
+    if (recipient == sender)
+    {
+        required += ack_length;
+    }
+
+    if (required > sizeof(recipient->output) - recipient->output_length)
+    {
+        return queue_response(sender,
+            "ERR 013 RECIPIENT_UNAVAILABLE " NODE_ID "\n");
+    }
+
+    /* The event loop is single-threaded, so capacity cannot change here.
+       OK SENT means queued for delivery, not confirmed read by the user. */
+    if (queue_response(sender, acknowledgement) == -1)
+    {
+        return -1;
+    }
+
+    return queue_response(recipient, forwarded);
 }
 
 /* Dispatch one complete command. */
@@ -296,23 +709,32 @@ static int handle_command(Client *client, const char *command)
             );
         }
 
+        if (find_room(name) != -1)
+        {
+            return queue_response(client,
+                "ERR 014 NAME_CONFLICT " NODE_ID "\n");
+        }
+
+        char response[160];
+        snprintf(response, sizeof(response),
+                 "OK REGISTERED %s %s\n", name, NODE_ID);
+
+        /* Queue the acknowledgement first. A failed registration must
+           not generate JOIN or LEAVE events for a never-announced user. */
+        if (queue_response(client, response) == -1)
+        {
+            return -1;
+        }
+
         memcpy(client->username, name, strlen(name) + 1);
         client->registered = 1;
 
         printf("Registered: %s (fd=%d)\n",
                client->username, client->fd);
 
-        char response[160];
-
-        snprintf(
-            response,
-            sizeof(response),
-            "OK REGISTERED %s %s\n",
-            client->username,
-            NODE_ID
-        );
-
-        return queue_response(client, response);
+        /* Includes the newly registered client, after its OK response. */
+        announce_presence("JOIN", client->username);
+        return 0;
     }
 
     if (strcmp(command, "REGISTER") == 0)
@@ -345,6 +767,41 @@ static int handle_command(Client *client, const char *command)
     if (strncmp(command, "BCAST ", 6) == 0)
     {
         return handle_broadcast(client, command + 6);
+    }
+
+    if (strcmp(command, "PMSG") == 0)
+    {
+        return queue_response(client,
+            "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+    }
+
+    if (strncmp(command, "PMSG ", 5) == 0)
+    {
+        return handle_private(client, command + 5);
+    }
+
+    if (strcmp(command, "JOIN") == 0 ||
+        strcmp(command, "LEAVE") == 0 ||
+        strcmp(command, "RMSG") == 0)
+    {
+        return queue_response(client,
+            "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+    }
+    if (strncmp(command, "JOIN ", 5) == 0)
+    {
+        return handle_join(client, command + 5);
+    }
+    if (strncmp(command, "LEAVE ", 6) == 0)
+    {
+        return handle_leave(client, command + 6);
+    }
+    if (strcmp(command, "ROOMS") == 0)
+    {
+        return handle_rooms(client);
+    }
+    if (strncmp(command, "RMSG ", 5) == 0)
+    {
+        return handle_room_message(client, command + 5);
     }
 
     if (strcmp(command, "QUIT") == 0)
@@ -410,7 +867,7 @@ static int receive_commands(Client *client)
 
             client->command_length = 0;
 
-            if (client->close_after_output)
+            if (client->close_after_output || client->drop_pending)
             {
                 return 0;
             }
@@ -588,6 +1045,8 @@ int main(void)
 
     for (;;)
     {
+        remove_dropped_clients();
+
         fd_set read_fds;
         fd_set write_fds;
 
@@ -602,7 +1061,7 @@ int main(void)
         {
             Client *client = &clients[i];
 
-            if (client->fd == -1)
+            if (client->fd == -1 || client->drop_pending)
             {
                 continue;
             }
@@ -651,7 +1110,7 @@ int main(void)
         {
             Client *client = &clients[i];
 
-            if (client->fd == -1)
+            if (client->fd == -1 || client->drop_pending)
             {
                 continue;
             }

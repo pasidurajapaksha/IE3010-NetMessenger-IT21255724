@@ -26,10 +26,11 @@ static int set_nonblocking(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-/* Format LIST on two display lines, preserving the wire protocol. */
+/* Format user/room lists on two display lines; wire responses stay one line. */
 static void display_response(const char *response)
 {
-    if (strncmp(response, "OK USERS ", 9) == 0)
+    if (strncmp(response, "OK USERS ", 9) == 0 ||
+        strncmp(response, "OK ROOMS ", 9) == 0)
     {
         printf("Server: OK\n");
         printf("%s\n", response + 3);
@@ -216,7 +217,11 @@ int main(int argc, char *argv[])
 
     printf("NetMessenger client | %s\n", REGISTRATION_NUMBER);
     printf("Connected to %s:%d\n", argv[1], SERVER_PORT);
-    printf("Commands: REGISTER <name>, LIST, BCAST <message>, QUIT\n");
+    printf("Commands: REGISTER <name>, LIST, BCAST <message>,\n");
+    printf("          PMSG <username> <message>, JOIN <room>, LEAVE <room>,\n");
+    printf("          ROOMS, RMSG <room> <message>, QUIT\n");
+    printf("Room example: JOIN study, then RMSG study Hello everyone\n");
+    printf("Join/leave notifications appear automatically as MSG JOIN/LEAVE.\n");
     printf("Press Ctrl+D on an empty line to disconnect locally.\n");
     printf("> ");
     fflush(stdout);
