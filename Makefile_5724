@@ -1,0 +1,15 @@
+CC = gcc
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g
+
+.PHONY: all clean
+
+all: server_5724 client_5724
+
+server_5724: server_5724.c config_5724.h
+	$(CC) $(CFLAGS) server_5724.c -o server_5724
+
+client_5724: client_5724.c config_5724.h
+	$(CC) $(CFLAGS) client_5724.c -o client_5724
+
+clean:
+	rm -f server_5724 client_5724
