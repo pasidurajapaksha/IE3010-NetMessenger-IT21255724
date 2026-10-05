@@ -8,8 +8,7 @@
 
 #include "config_5724.h"
 
-/* Send the entire response, even when send() writes only part of it.
-   This helper is intended for the blocking socket used at this stage. */
+/* Send a complete response through the current blocking socket. */
 static int send_response(int client_fd, const char *response)
 {
     size_t length = strlen(response);
@@ -26,7 +25,6 @@ static int send_response(int client_fd, const char *response)
 
         if (sent == -1)
         {
-            /* Retry if a signal interrupted the operation. */
             if (errno == EINTR)
             {
                 continue;
@@ -46,6 +44,87 @@ static int send_response(int client_fd, const char *response)
     }
 
     return 0;
+}
+
+/* Process one complete command.
+   Pointers let this function update the client's registration state. */
+static int handle_command(
+    int client_fd,
+    const char *command,
+    int *registered,
+    char *username,
+    size_t username_capacity
+)
+{
+    char response[160];
+
+    if (strncmp(command, "REGISTER ", 9) == 0)
+    {
+        const char *requested_name = command + 9;
+        size_t name_length = strlen(requested_name);
+
+        int valid_name = name_length > 0 &&
+                         name_length < username_capacity;
+
+        /* Usernames allow ASCII letters, digits, underscores and hyphens. */
+        for (size_t j = 0; j < name_length; j++)
+        {
+            char c = requested_name[j];
+
+            if (!((c >= 'a' && c <= 'z') ||
+                  (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '_' || c == '-'))
+            {
+                valid_name = 0;
+                break;
+            }
+        }
+
+        if (*registered)
+        {
+            snprintf(response, sizeof(response),
+                     "ERR 005 ALREADY_REGISTERED %s\n",
+                     NODE_ID);
+        }
+        else if (!valid_name)
+        {
+            snprintf(response, sizeof(response),
+                     "ERR 006 INVALID_USERNAME %s\n",
+                     NODE_ID);
+        }
+        else
+        {
+            /* The validated name fits, including its terminating NUL. */
+            memcpy(username, requested_name, name_length + 1);
+            *registered = 1;
+
+            snprintf(response, sizeof(response),
+                     "OK REGISTERED %s %s\n",
+                     username, NODE_ID);
+        }
+    }
+    else if (strcmp(command, "REGISTER") == 0)
+    {
+        snprintf(response, sizeof(response),
+                 "ERR 006 INVALID_USERNAME %s\n",
+                 NODE_ID);
+    }
+    else if (!*registered)
+    {
+        snprintf(response, sizeof(response),
+                 "ERR 007 REGISTER_REQUIRED %s\n",
+                 NODE_ID);
+    }
+    else
+    {
+        /* Other protocol commands are not implemented at this stage. */
+        snprintf(response, sizeof(response),
+                 "ERR 008 UNKNOWN_COMMAND %s\n",
+                 NODE_ID);
+    }
+
+    return send_response(client_fd, response);
 }
 
 int main(void)
@@ -74,7 +153,6 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    /* Configure the local IPv4 address and personalised port. */
     struct sockaddr_in server_address = {0};
 
     server_address.sin_family = AF_INET;
@@ -88,6 +166,7 @@ int main(void)
         return EXIT_FAILURE;
     }
 
+    /* Assign the configured address and personalised port. */
     if (bind(listen_fd, (struct sockaddr *)&server_address,
              sizeof(server_address)) == -1)
     {
@@ -96,7 +175,7 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    /* The backlog controls pending connections, not active clients. */
+    /* Eight is the pending-connection backlog, not an active-client limit. */
     if (listen(listen_fd, 8) == -1)
     {
         perror("listen");
@@ -112,7 +191,7 @@ int main(void)
     socklen_t client_address_length;
     int client_fd;
 
-    /* Accept one client, retrying if interrupted by a signal. */
+    /* Accept one client, retrying interrupted accept() calls. */
     for (;;)
     {
         client_address_length = sizeof(client_address);
@@ -153,13 +232,13 @@ int main(void)
 
     printf("Client socket descriptor: %d\n", client_fd);
 
-    /* Preserve unfinished commands across recv() calls. */
+    /* Keep unfinished command bytes between receive operations. */
     char receive_buffer[512];
     char command[1024];
     size_t command_length = 0;
     int stop_receiving = 0;
 
-    /* Registration state belongs to this single connection. */
+    /* These values currently belong to the single accepted client. */
     int registered = 0;
     char username[32] = {0};
 
@@ -183,7 +262,6 @@ int main(void)
             break;
         }
 
-        /* Zero means the peer has closed its sending side. */
         if (received == 0)
         {
             printf("Client disconnected.\n");
@@ -196,7 +274,7 @@ int main(void)
             break;
         }
 
-        /* A received buffer may contain part of a line or many lines. */
+        /* One receive may contain an incomplete line or several lines. */
         for (ssize_t i = 0; i < received; i++)
         {
             char current = receive_buffer[i];
@@ -206,78 +284,17 @@ int main(void)
                 command[command_length] = '\0';
                 printf("Complete command: %s\n", command);
 
-                char response[160];
-
-                if (strncmp(command, "REGISTER ", 9) == 0)
-                {
-                    const char *requested_name = command + 9;
-                    size_t name_length = strlen(requested_name);
-
-                    /* Reserve one byte for the terminating NUL. */
-                    int valid_name = name_length > 0 &&
-                                     name_length < sizeof(username);
-
-                    /* Allow ASCII letters, digits, underscores and hyphens. */
-                    for (size_t j = 0; j < name_length; j++)
-                    {
-                        char c = requested_name[j];
-
-                        if (!((c >= 'a' && c <= 'z') ||
-                              (c >= 'A' && c <= 'Z') ||
-                              (c >= '0' && c <= '9') ||
-                              c == '_' || c == '-'))
-                        {
-                            valid_name = 0;
-                            break;
-                        }
-                    }
-
-                    if (registered)
-                    {
-                        snprintf(response, sizeof(response),
-                                 "ERR 005 ALREADY_REGISTERED %s\n",
-                                 NODE_ID);
-                    }
-                    else if (!valid_name)
-                    {
-                        snprintf(response, sizeof(response),
-                                 "ERR 006 INVALID_USERNAME %s\n",
-                                 NODE_ID);
-                    }
-                    else
-                    {
-                        /* Copy the validated username, including its NUL. */
-                        memcpy(username, requested_name, name_length + 1);
-                        registered = 1;
-
-                        snprintf(response, sizeof(response),
-                                 "OK REGISTERED %s %s\n",
-                                 username, NODE_ID);
-                    }
-                }
-                else if (strcmp(command, "REGISTER") == 0)
-                {
-                    snprintf(response, sizeof(response),
-                             "ERR 006 INVALID_USERNAME %s\n",
-                             NODE_ID);
-                }
-                else if (!registered)
-                {
-                    snprintf(response, sizeof(response),
-                             "ERR 007 REGISTER_REQUIRED %s\n",
-                             NODE_ID);
-                }
-                else
-                {
-                    /* Other commands will be implemented in later stages. */
-                    snprintf(response, sizeof(response),
-                             "ERR 008 UNKNOWN_COMMAND %s\n",
-                             NODE_ID);
-                }
+                int result = handle_command(
+                    client_fd,
+                    command,
+                    &registered,
+                    username,
+                    sizeof(username)
+                );
 
                 command_length = 0;
 
-                if (send_response(client_fd, response) == -1)
+                if (result == -1)
                 {
                     stop_receiving = 1;
                     break;
@@ -285,8 +302,7 @@ int main(void)
             }
             else if (current == '\0')
             {
-                /* NUL is invalid in a text command.
-                   Binary file data will need a separate parser state. */
+                /* Text commands cannot contain embedded NUL bytes. */
                 fprintf(stderr, "Invalid NUL byte in command.\n");
 
                 (void)send_response(
@@ -303,7 +319,7 @@ int main(void)
             }
             else
             {
-                /* Close after the error to avoid parsing a truncated line. */
+                /* Close rather than interpret the remainder as a new line. */
                 fprintf(stderr, "Command exceeds the buffer limit.\n");
 
                 (void)send_response(
@@ -319,7 +335,7 @@ int main(void)
 
     int exit_status = EXIT_SUCCESS;
 
-    /* Release both descriptors, even if the first close reports an error. */
+    /* Attempt both closes even if the first one fails. */
     if (close(client_fd) == -1)
     {
         perror("close client");
