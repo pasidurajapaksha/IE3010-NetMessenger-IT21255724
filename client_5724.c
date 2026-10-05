@@ -2,107 +2,166 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <arpa/inet.h>
 
 #include "config_5724.h"
 
-/* Send all command bytes, including the terminating newline. */
-static int send_command(int socket_fd, const char *command)
+#define COMMAND_SIZE 1024
+#define RESPONSE_SIZE 2048
+#define OUTPUT_SIZE 4096
+
+static int set_nonblocking(int fd)
 {
-    size_t length = strlen(command);
-    size_t total_sent = 0;
+    int flags = fcntl(fd, F_GETFL, 0);
 
-    while (total_sent < length)
+    if (flags == -1)
     {
-        ssize_t sent = send(
-            socket_fd,
-            command + total_sent,
-            length - total_sent,
-            MSG_NOSIGNAL
-        );
+        return -1;
+    }
 
-        if (sent == -1)
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+/* Format LIST on two display lines, preserving the wire protocol. */
+static void display_response(const char *response)
+{
+    if (strncmp(response, "OK USERS ", 9) == 0)
+    {
+        printf("Server: OK\n");
+        printf("%s\n", response + 3);
+    }
+    else if (strncmp(response, "MSG ", 4) == 0)
+    {
+        printf("%s\n", response);
+    }
+    else
+    {
+        printf("Server: %s\n", response);
+    }
+}
+
+/* Return 1 to finish, 0 to continue, or -1 on error.
+   Incomplete lines are preserved between receive operations. */
+static int receive_messages(
+    int socket_fd,
+    char *response,
+    size_t *response_length
+)
+{
+    char buffer[512];
+
+    ssize_t received = recv(
+        socket_fd,
+        buffer,
+        sizeof(buffer),
+        0
+    );
+
+    if (received == -1)
+    {
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
         {
-            if (errno == EINTR)
+            return 0;
+        }
+
+        perror("recv");
+        return -1;
+    }
+
+    if (received == 0)
+    {
+        if (*response_length > 0)
+        {
+            fprintf(stderr, "\nServer closed during a response.\n");
+            return -1;
+        }
+
+        printf("\nServer closed the connection.\n");
+        return 1;
+    }
+
+    for (ssize_t i = 0; i < received; i++)
+    {
+        char current = buffer[i];
+
+        if (current == '\n')
+        {
+            response[*response_length] = '\0';
+
+            printf("\n");
+            display_response(response);
+            *response_length = 0;
+
+            if (strcmp(response, "OK BYE " NODE_ID) == 0)
             {
-                continue;
+                return 1;
             }
 
-            perror("send");
-            return -1;
+            printf("> ");
+            fflush(stdout);
         }
-
-        if (sent == 0)
+        else if (current == '\0')
         {
-            fprintf(stderr, "Unable to send the complete command.\n");
+            fprintf(stderr, "\nInvalid NUL byte in response.\n");
             return -1;
         }
-
-        total_sent += (size_t)sent;
+        else if (*response_length < RESPONSE_SIZE - 1)
+        {
+            response[(*response_length)++] = current;
+        }
+        else
+        {
+            fprintf(stderr, "\nServer response is too long.\n");
+            return -1;
+        }
     }
 
     return 0;
 }
 
-/* Read exactly one response line.
-   Byte-by-byte reading is simple for this initial request/response client.
-   Later, we will use buffered receiving for asynchronous messages. */
-static int receive_response(int socket_fd)
+/* Send pending commands without blocking on a slow server. */
+static int flush_output(
+    int socket_fd,
+    char *output,
+    size_t *output_length
+)
 {
-    char response[1024];
-    size_t length = 0;
+    ssize_t sent = send(
+        socket_fd,
+        output,
+        *output_length,
+        MSG_NOSIGNAL
+    );
 
-    for (;;)
+    if (sent == -1)
     {
-        char current;
-        ssize_t received = recv(socket_fd, &current, 1, 0);
-
-        if (received == -1)
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
         {
-            if (errno == EINTR)
-            {
-                continue;
-            }
-
-            perror("recv");
-            return -1;
-        }
-
-        if (received == 0)
-        {
-            if (length > 0)
-            {
-                fprintf(stderr, "Server closed during a response.\n");
-                return -1;
-            }
-
-            printf("Server closed the connection.\n");
             return 0;
         }
 
-        if (current == '\n')
-        {
-            response[length] = '\0';
-            printf("Server: %s\n", response);
-            return 1;
-        }
-
-        if (current == '\0')
-        {
-            fprintf(stderr, "Invalid NUL byte in server response.\n");
-            return -1;
-        }
-
-        if (length >= sizeof(response) - 1)
-        {
-            fprintf(stderr, "Server response exceeds the buffer limit.\n");
-            return -1;
-        }
-
-        response[length++] = current;
+        perror("send");
+        return -1;
     }
+
+    if (sent == 0)
+    {
+        return -1;
+    }
+
+    *output_length -= (size_t)sent;
+
+    memmove(
+        output,
+        output + (size_t)sent,
+        *output_length
+    );
+
+    return 0;
 }
 
 int main(int argc, char *argv[])
@@ -113,11 +172,12 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    struct sockaddr_in server_address = {0};
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(SERVER_PORT);
+    struct sockaddr_in address = {0};
 
-    if (inet_pton(AF_INET, argv[1], &server_address.sin_addr) != 1)
+    address.sin_family = AF_INET;
+    address.sin_port = htons(SERVER_PORT);
+
+    if (inet_pton(AF_INET, argv[1], &address.sin_addr) != 1)
     {
         fprintf(stderr, "Invalid server IPv4 address\n");
         return EXIT_FAILURE;
@@ -131,82 +191,189 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    if (connect(socket_fd, (struct sockaddr *)&server_address,
-                sizeof(server_address)) == -1)
+    if (socket_fd >= FD_SETSIZE)
+    {
+        fprintf(stderr, "Socket descriptor exceeds select limit.\n");
+        close(socket_fd);
+        return EXIT_FAILURE;
+    }
+
+    /* Establish the connection before switching to nonblocking I/O. */
+    if (connect(socket_fd, (struct sockaddr *)&address,
+                sizeof(address)) == -1)
     {
         perror("connect");
         close(socket_fd);
         return EXIT_FAILURE;
     }
 
+    if (set_nonblocking(socket_fd) == -1)
+    {
+        perror("fcntl");
+        close(socket_fd);
+        return EXIT_FAILURE;
+    }
+
     printf("NetMessenger client | %s\n", REGISTRATION_NUMBER);
     printf("Connected to %s:%d\n", argv[1], SERVER_PORT);
-    printf("Enter a command, such as REGISTER pasidu.\n");
-    printf("Press Ctrl+D on an empty input line to disconnect.\n");
+    printf("Commands: REGISTER <name>, LIST, BCAST <message>, QUIT\n");
+    printf("Press Ctrl+D on an empty line to disconnect locally.\n");
+    printf("> ");
+    fflush(stdout);
 
-    /* Allow up to 1023 command characters, a newline, and a NUL. */
-    char command[1025];
+    char command[COMMAND_SIZE];
+    size_t command_length = 0;
+    int discard_input = 0;
+
+    char response[RESPONSE_SIZE];
+    size_t response_length = 0;
+
+    char output[OUTPUT_SIZE];
+    size_t output_length = 0;
+
     int exit_status = EXIT_SUCCESS;
 
     for (;;)
     {
-        printf("> ");
-        fflush(stdout);
+        fd_set read_fds;
+        fd_set write_fds;
 
-        if (fgets(command, sizeof(command), stdin) == NULL)
+        FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
+
+        FD_SET(STDIN_FILENO, &read_fds);
+        FD_SET(socket_fd, &read_fds);
+
+        if (output_length > 0)
         {
-            if (ferror(stdin))
-            {
-                fprintf(stderr, "Unable to read terminal input.\n");
-                exit_status = EXIT_FAILURE;
-            }
-
-            break;
+            FD_SET(socket_fd, &write_fds);
         }
 
-        /* Reject incomplete or oversized input rather than sending
-           a command without the required newline. */
-        if (strchr(command, '\n') == NULL)
+        int highest_fd = socket_fd > STDIN_FILENO
+                         ? socket_fd : STDIN_FILENO;
+
+        int ready = select(
+            highest_fd + 1,
+            &read_fds,
+            &write_fds,
+            NULL,
+            NULL
+        );
+
+        if (ready == -1)
         {
-            int current;
-
-            while ((current = getchar()) != '\n' && current != EOF)
+            if (errno == EINTR)
             {
+                continue;
             }
 
-            fprintf(stderr,
-                    "Command too long or missing a newline; not sent.\n");
-
-            if (ferror(stdin))
-            {
-                exit_status = EXIT_FAILURE;
-                break;
-            }
-
-            if (feof(stdin))
-            {
-                break;
-            }
-
-            continue;
-        }
-
-        if (send_command(socket_fd, command) == -1)
-        {
+            perror("select");
             exit_status = EXIT_FAILURE;
             break;
         }
 
-        int result = receive_response(socket_fd);
-
-        if (result <= 0)
+        /* Incoming messages are processed independently of keyboard input. */
+        if (FD_ISSET(socket_fd, &read_fds))
         {
-            if (result == -1)
+            int result = receive_messages(
+                socket_fd,
+                response,
+                &response_length
+            );
+
+            if (result != 0)
+            {
+                if (result == -1)
+                {
+                    exit_status = EXIT_FAILURE;
+                }
+
+                break;
+            }
+        }
+
+        if (FD_ISSET(socket_fd, &write_fds) && output_length > 0)
+        {
+            if (flush_output(socket_fd, output, &output_length) == -1)
             {
                 exit_status = EXIT_FAILURE;
+                break;
+            }
+        }
+
+        /* read() avoids hidden stdio input buffering with select(). */
+        if (FD_ISSET(STDIN_FILENO, &read_fds))
+        {
+            char current;
+
+            ssize_t received = read(
+                STDIN_FILENO,
+                &current,
+                1
+            );
+
+            if (received == -1)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+
+                perror("read stdin");
+                exit_status = EXIT_FAILURE;
+                break;
             }
 
-            break;
+            if (received == 0)
+            {
+                /* EOF closes locally. Use QUIT for an acknowledged exit. */
+                printf("\n");
+                break;
+            }
+
+            if (current == '\n')
+            {
+                if (discard_input)
+                {
+                    fprintf(stderr,
+                            "Invalid or oversized command; not sent.\n");
+                }
+                else if (command_length + 1 >
+                         sizeof(output) - output_length)
+                {
+                    fprintf(stderr,
+                            "Outgoing queue full; command not sent.\n");
+                }
+                else
+                {
+                    memcpy(
+                        output + output_length,
+                        command,
+                        command_length
+                    );
+
+                    output_length += command_length;
+                    output[output_length++] = '\n';
+                }
+
+                command_length = 0;
+                discard_input = 0;
+
+                printf("> ");
+                fflush(stdout);
+            }
+            else if (!discard_input)
+            {
+                if (current == '\0' ||
+                    command_length >= sizeof(command) - 1)
+                {
+                    discard_input = 1;
+                }
+                else
+                {
+                    command[command_length++] = current;
+                }
+            }
         }
     }
 
@@ -217,6 +384,5 @@ int main(int argc, char *argv[])
     }
 
     printf("Client stopped.\n");
-
     return exit_status;
 }
