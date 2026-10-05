@@ -1,4 +1,6 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -9,11 +11,13 @@
 #include <arpa/inet.h>
 
 #include "config_5724.h"
+#include "file_io_5724.h"
+#include <time.h>
 
 #define MAX_CLIENTS 16
 #define MAX_ROOMS 16
 #define COMMAND_SIZE 1024
-#define OUTPUT_SIZE 4096
+#define OUTPUT_SIZE FILE_QUEUE_SIZE
 
 /* Each client has independent registration and buffering state. */
 typedef struct
@@ -22,6 +26,14 @@ typedef struct
     int registered;
     int close_after_output;
     int drop_pending;
+    unsigned long session_id;
+
+    /* Bounded in-memory upload; disk publication happens only on completion. */
+    unsigned char *file_data;
+    size_t file_size, file_received;
+    char file_name[128];
+    unsigned long file_recipients[MAX_CLIENTS];
+    time_t upload_activity;
 
     char username[32];
 
@@ -33,6 +45,7 @@ typedef struct
 } Client;
 
 static Client clients[MAX_CLIENTS];
+static unsigned long next_session_id;
 
 typedef struct
 {
@@ -46,6 +59,41 @@ static Room rooms[MAX_ROOMS];
 static void remove_client_from_rooms(const Client *client);
 
 static void announce_presence(const char *event, const char *username);
+
+/* Append each event immediately so evidence survives a stopped server. */
+static FILE *server_log;
+
+static void close_server_log(void)
+{
+    if (server_log) fclose(server_log);
+}
+
+static void log_event(const char *format, ...)
+{
+    if (!server_log) return;
+    time_t now = time(NULL);
+    struct tm local;
+    char timestamp[48] = "unknown-time";
+    if (localtime_r(&now, &local))
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &local);
+
+    char message[2048];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+
+    fprintf(server_log, "[%s] ", timestamp);
+    /* Escape control characters so message text cannot forge log entries. */
+    for (const unsigned char *p = (const unsigned char *)message; *p; p++)
+    {
+        if (*p < 32 || *p == 127) fprintf(server_log, "\\x%02x", *p);
+        else fputc(*p, server_log);
+    }
+    fputc('\n', server_log);
+    if (fflush(server_log) == EOF)
+        perror("write server log");
+}
 
 /* Prevent socket operations from blocking the entire server. */
 static int set_nonblocking(int fd)
@@ -69,6 +117,13 @@ static void disconnect_client(Client *client)
         return;
     }
 
+    log_event("DISCONNECT fd=%d user=%s", client->fd,
+              client->registered ? client->username : "unregistered");
+    if (client->file_data)
+        log_event("FILE_ABORT user=%s file=%s received=%zu expected=%zu",
+                  client->username, client->file_name,
+                  client->file_received, client->file_size);
+
     int was_registered = client->registered;
     char username[sizeof(client->username)];
     memcpy(username, client->username, sizeof(username));
@@ -81,6 +136,8 @@ static void disconnect_client(Client *client)
         perror("close client");
     }
 
+    free(client->file_data);
+    client->file_data = NULL;
     remove_client_from_rooms(client);
 
     memset(client, 0, sizeof(*client));
@@ -95,6 +152,9 @@ static void disconnect_client(Client *client)
 /* Queue protocol output for transmission when the socket is writable. */
 static int queue_response(Client *client, const char *response)
 {
+    if (!strncmp(response, "ERR ", 4))
+        log_event("ERROR fd=%d user=%s response=%s", client->fd,
+                  client->registered ? client->username : "unregistered", response);
     size_t length = strlen(response);
 
     if (length > sizeof(client->output) - client->output_length)
@@ -678,9 +738,158 @@ static int handle_private(Client *sender, const char *arguments)
     return queue_response(recipient, forwarded);
 }
 
+/* Raw payload state is independent of newline command framing. */
+static void clear_upload(Client *client)
+{
+    free(client->file_data);
+    client->file_data = NULL;
+    client->file_size = client->file_received = 0;
+    client->upload_activity = 0;
+    memset(client->file_recipients, 0, sizeof(client->file_recipients));
+}
+
+static int reject_upload(Client *client, const char *response)
+{
+    /* Payload follows the header immediately. Close after error rather than
+       accidentally treating rejected binary bytes as new text commands. */
+    clear_upload(client);
+    client->close_after_output = 1;
+    return queue_response(client, response);
+}
+
+static int finish_upload(Client *sender)
+{
+    char header[256], acknowledgement[200];
+    /* Recipient framing is our choice because the brief leaves it unspecified:
+       MSG FILE <sender> <filename> <size> newline, then exactly size raw bytes. */
+    int h = snprintf(header, sizeof(header), "MSG FILE %s %s %zu\n",
+                     sender->username, sender->file_name, sender->file_size);
+    int a = snprintf(acknowledgement, sizeof(acknowledgement),
+                     "OK FILE_RECEIVED %s " NODE_ID "\n", sender->file_name);
+    if (h < 0 || a < 0 || (size_t)h >= sizeof(header) ||
+        (size_t)a >= sizeof(acknowledgement)) return -1;
+
+    /* Snapshot recipients at upload start. Session IDs prevent a reused slot
+       from receiving a previous client's file. All intended recipients must
+       still be available when the upload completes. */
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        Client *r = &clients[i];
+        if (!sender->file_recipients[i]) continue;
+        size_t required = (size_t)h + sender->file_size;
+        if (r == sender) required += (size_t)a;
+        if (r->fd == -1 || r->session_id != sender->file_recipients[i] ||
+            r->close_after_output || r->drop_pending ||
+            required > sizeof(r->output) - r->output_length)
+        {
+            clear_upload(sender);
+            return queue_response(sender,
+                "ERR 013 RECIPIENT_UNAVAILABLE " NODE_ID "\n");
+        }
+    }
+    if ((size_t)a > sizeof(sender->output) - sender->output_length)
+        return -1;
+
+    if (file_save("storage", REGISTRATION_NUMBER, sender->username,
+                  sender->file_name, sender->file_data, sender->file_size) == -1)
+    {
+        int exists = errno == EEXIST;
+        perror("store upload");
+        clear_upload(sender);
+        return queue_response(sender, exists ?
+            "ERR 018 FILE_EXISTS " NODE_ID "\n" :
+            "ERR 019 FILE_IO_ERROR " NODE_ID "\n");
+    }
+
+    queue_response(sender, acknowledgement);
+    for (int i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (!sender->file_recipients[i]) continue;
+        Client *r = &clients[i];
+        /* Append header and payload together: chat cannot interleave them. */
+        memcpy(r->output + r->output_length, header, (size_t)h);
+        r->output_length += (size_t)h;
+        memcpy(r->output + r->output_length, sender->file_data, sender->file_size);
+        r->output_length += sender->file_size;
+    }
+    log_event("FILE_STORED_AND_QUEUED user=%s file=%s bytes=%zu",
+              sender->username, sender->file_name, sender->file_size);
+    printf("Stored file: %s/%s/%s (%zu bytes)\n",
+           STORAGE_ROOT, sender->username, sender->file_name, sender->file_size);
+    clear_upload(sender);
+    return 0;
+}
+
+static int begin_upload(Client *sender, const char *arguments)
+{
+    char target[32], filename[128], size_text[32], extra;
+    if (sscanf(arguments, "%31s %127s %31s %c",
+               target, filename, size_text, &extra) != 3 ||
+        !valid_username(target) || !file_component_valid(filename))
+        return reject_upload(sender, "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+
+    size_t size;
+    int parsed = file_size_parse(size_text, &size);
+    if (parsed != 0)
+        return reject_upload(sender, parsed == 1 ?
+            "ERR 004 FILE_TOO_LARGE " NODE_ID "\n" :
+            "ERR 020 INVALID_FILE_SIZE " NODE_ID "\n");
+
+    memset(sender->file_recipients, 0, sizeof(sender->file_recipients));
+    int room = find_room(target);
+    int recipients = 0;
+    if (room != -1)
+    {
+        if (!rooms[room].members[sender - clients])
+            return reject_upload(sender, "ERR 016 NOT_ROOM_MEMBER " NODE_ID "\n");
+        for (int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if (rooms[room].members[i] && clients[i].fd != -1 &&
+                clients[i].registered && !clients[i].close_after_output &&
+                !clients[i].drop_pending)
+            {
+                sender->file_recipients[i] = clients[i].session_id;
+                recipients++;
+            }
+        }
+    }
+    else
+    {
+        for (int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if (clients[i].fd != -1 && clients[i].registered &&
+                !clients[i].close_after_output && !clients[i].drop_pending &&
+                strcmp(clients[i].username, target) == 0)
+            {
+                sender->file_recipients[i] = clients[i].session_id;
+                recipients++;
+                break;
+            }
+        }
+    }
+    /* Missing bare targets have no type prefix: use USER_NOT_FOUND. */
+    if (!recipients)
+        return reject_upload(sender, "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+
+    sender->file_data = malloc(size ? size : 1);
+    if (!sender->file_data)
+        return reject_upload(sender, "ERR 021 RESOURCE_LIMIT " NODE_ID "\n");
+    memcpy(sender->file_name, filename, strlen(filename) + 1);
+    sender->file_size = size;
+    sender->file_received = 0;
+    sender->upload_activity = time(NULL);
+    log_event("FILE_START user=%s target=%s file=%s bytes=%zu recipients=%d",
+              sender->username, target, filename, size, recipients);
+    return size == 0 ? finish_upload(sender) : 0;
+}
+
 /* Dispatch one complete command. */
 static int handle_command(Client *client, const char *command)
 {
+    /* Includes broadcast/private/room requests and transfer headers. */
+    log_event("COMMAND fd=%d user=%s text=%s", client->fd,
+              client->registered ? client->username : "unregistered", command);
+
     if (strncmp(command, "REGISTER ", 9) == 0)
     {
         const char *name = command + 9;
@@ -733,6 +942,7 @@ static int handle_command(Client *client, const char *command)
                client->username, client->fd);
 
         /* Includes the newly registered client, after its OK response. */
+        log_event("REGISTER fd=%d user=%s", client->fd, client->username);
         announce_presence("JOIN", client->username);
         return 0;
     }
@@ -744,6 +954,11 @@ static int handle_command(Client *client, const char *command)
             "ERR 006 INVALID_USERNAME " NODE_ID "\n"
         );
     }
+
+    /* Reject before reading raw bytes if the sender has not registered. */
+    if (!client->registered &&
+        (!strcmp(command, "SENDFILE") || !strncmp(command, "SENDFILE ", 9)))
+        return reject_upload(client, "ERR 007 REGISTER_REQUIRED " NODE_ID "\n");
 
     /* Other commands require successful registration first. */
     if (!client->registered)
@@ -804,6 +1019,11 @@ static int handle_command(Client *client, const char *command)
         return handle_room_message(client, command + 5);
     }
 
+    if (!strcmp(command, "SENDFILE"))
+        return reject_upload(client, "ERR 012 INVALID_ARGUMENTS " NODE_ID "\n");
+    if (!strncmp(command, "SENDFILE ", 9))
+        return begin_upload(client, command + 9);
+
     if (strcmp(command, "QUIT") == 0)
     {
         /* Stop accepting commands and close after sending queued output. */
@@ -824,7 +1044,7 @@ static int handle_command(Client *client, const char *command)
 /* Reconstruct newline-terminated commands across TCP receive boundaries. */
 static int receive_commands(Client *client)
 {
-    char buffer[512];
+    char buffer[8192];
 
     ssize_t received = recv(
         client->fd,
@@ -851,6 +1071,23 @@ static int receive_commands(Client *client)
 
     for (ssize_t i = 0; i < received; i++)
     {
+        /* Binary payload may contain newlines and NUL bytes. Consume exactly
+           the declared size, then resume command parsing in this same buffer. */
+        if (client->file_data)
+        {
+            size_t take = client->file_size - client->file_received;
+            size_t available = (size_t)(received - i);
+            if (take > available) take = available;
+            memcpy(client->file_data + client->file_received, buffer + i, take);
+            client->file_received += take;
+            client->upload_activity = time(NULL);
+            i += (ssize_t)take - 1;
+            if (client->file_received == client->file_size &&
+                finish_upload(client) == -1)
+                return -1;
+            continue;
+        }
+
         char current = buffer[i];
 
         if (current == '\n')
@@ -955,6 +1192,8 @@ static void accept_client(int listen_fd)
 
     memset(&clients[slot], 0, sizeof(clients[slot]));
     clients[slot].fd = fd;
+    clients[slot].session_id = ++next_session_id;
+    log_event("CONNECT fd=%d session=%lu", fd, clients[slot].session_id);
 
     char ip[INET_ADDRSTRLEN];
 
@@ -973,6 +1212,17 @@ static void accept_client(int listen_fd)
 
 int main(void)
 {
+    /* Failure to open the required log is reported instead of silently
+       running without assignment evidence. */
+    server_log = fopen(LOG_FILE, "a");
+    if (!server_log)
+    {
+        perror("open server log");
+        return EXIT_FAILURE;
+    }
+    atexit(close_server_log);
+    log_event("START registration=%s port=%d", REGISTRATION_NUMBER, SERVER_PORT);
+
     /* A descriptor of -1 identifies an unused slot. */
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
@@ -1041,11 +1291,23 @@ int main(void)
     printf("NetMessenger server | %s\n", REGISTRATION_NUMBER);
     printf("Listening on %s:%d\n", SERVER_BIND_IP, SERVER_PORT);
     printf("Client capacity: %d\n", MAX_CLIENTS);
+    printf("File limit: %u bytes; upload idle timeout: 30 seconds\n", MAX_FILE_SIZE);
     fflush(stdout);
 
     for (;;)
     {
         remove_dropped_clients();
+        /* A stalled upload must not retain its buffer indefinitely. */
+        for (int i = 0; i < MAX_CLIENTS; i++)
+        {
+            if (clients[i].fd != -1 && clients[i].file_data &&
+                time(NULL) - clients[i].upload_activity >= 30)
+            {
+                if (reject_upload(&clients[i],
+                    "ERR 022 TRANSFER_TIMEOUT " NODE_ID "\n") == -1)
+                    disconnect_client(&clients[i]);
+            }
+        }
 
         fd_set read_fds;
         fd_set write_fds;
@@ -1082,12 +1344,13 @@ int main(void)
             }
         }
 
+        struct timeval timeout = {1, 0};
         int ready = select(
             highest_fd + 1,
             &read_fds,
             &write_fds,
             NULL,
-            NULL
+            &timeout
         );
 
         if (ready == -1)

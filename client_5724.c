@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,10 +10,12 @@
 #include <arpa/inet.h>
 
 #include "config_5724.h"
+#include "file_io_5724.h"
+#include <time.h>
 
 #define COMMAND_SIZE 1024
 #define RESPONSE_SIZE 2048
-#define OUTPUT_SIZE 4096
+#define OUTPUT_SIZE FILE_QUEUE_SIZE
 
 static int set_nonblocking(int fd)
 {
@@ -45,6 +48,117 @@ static void display_response(const char *response)
     }
 }
 
+static char local_username[32] = "unregistered";
+static int local_registered;
+static unsigned char *download_data;
+static size_t download_size, download_received;
+static char download_sender[32], download_name[128];
+static time_t download_activity;
+
+static void finish_download(void)
+{
+    if (file_save("downloads", local_username, download_sender,
+                  download_name, download_data, download_size) == -1)
+        perror("save received file (existing files are not overwritten)");
+    else
+        printf("\nReceived file: downloads/%s/%s/%s (%zu bytes)\n",
+               local_username, download_sender, download_name, download_size);
+    free(download_data);
+    download_data = NULL;
+    download_activity = 0;
+    printf("> ");
+    fflush(stdout);
+}
+
+/* /send is a local convenience command, not a new wire protocol command.
+   It calculates the length and emits SENDFILE plus unmodified file bytes. */
+static int queue_input(const char *command, char *output, size_t *used)
+{
+    if (strncmp(command, "/send ", 6) != 0)
+    {
+        if (!strcmp(command, "/send") || !strcmp(command, "SENDFILE") ||
+            !strncmp(command, "SENDFILE ", 9))
+        {
+            fprintf(stderr, "Use /send <target> <local-file-path>\n");
+            return 0;
+        }
+        size_t n = strlen(command);
+        if (n + 1 > OUTPUT_SIZE - *used)
+        {
+            fprintf(stderr, "Outgoing queue full; command not sent.\n");
+            return 0;
+        }
+        memcpy(output + *used, command, n);
+        *used += n;
+        output[(*used)++] = '\n';
+        return 0;
+    }
+    if (!local_registered)
+    {
+        fprintf(stderr, "Register successfully before sending files.\n");
+        return 0;
+    }
+
+    char target[32], path[512], extra;
+    if (sscanf(command + 6, "%31s %511s %c", target, path, &extra) != 2 ||
+        !file_component_valid(target))
+    {
+        fprintf(stderr, "Usage: /send <target> <path-without-spaces>\n");
+        return 0;
+    }
+    const char *name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    if (!file_component_valid(name))
+    {
+        fprintf(stderr, "Unsafe filename. Use letters, digits, dot, _ or -.\n");
+        return 0;
+    }
+
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (fd == -1) { perror("open upload"); return 0; }
+    struct stat st;
+    if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode) ||
+        st.st_size < 0 || (unsigned long long)st.st_size > MAX_FILE_SIZE)
+    {
+        fprintf(stderr, "Upload must be a regular file no larger than 1 MiB.\n");
+        close(fd);
+        return 0;
+    }
+    size_t size = (size_t)st.st_size;
+    unsigned char *data = malloc(size ? size : 1);
+    if (!data) { close(fd); return -1; }
+    size_t done = 0;
+    while (done < size)
+    {
+        ssize_t n = read(fd, data + done, size - done);
+        if (n == -1 && errno == EINTR) continue;
+        if (n <= 0)
+        {
+            fprintf(stderr, "Unable to read complete upload.\n");
+            free(data); close(fd); return 0;
+        }
+        done += (size_t)n;
+    }
+    close(fd);
+
+    char header[256];
+    int n = snprintf(header, sizeof(header), "SENDFILE %s %s %zu\n",
+                     target, name, size);
+    if (n < 0 || (size_t)n >= sizeof(header) ||
+        (size_t)n + size > OUTPUT_SIZE - *used)
+    {
+        fprintf(stderr, "Outgoing queue full; file not sent.\n");
+        free(data); return 0;
+    }
+    memcpy(output + *used, header, (size_t)n);
+    *used += (size_t)n;
+    memcpy(output + *used, data, size);
+    *used += size;
+    free(data);
+    printf("Queued file: %s -> %s (%zu bytes)\n", name, target, size);
+    return 0;
+}
+
 /* Return 1 to finish, 0 to continue, or -1 on error.
    Incomplete lines are preserved between receive operations. */
 static int receive_messages(
@@ -53,7 +167,7 @@ static int receive_messages(
     size_t *response_length
 )
 {
-    char buffer[512];
+    char buffer[8192];
 
     ssize_t received = recv(
         socket_fd,
@@ -75,7 +189,7 @@ static int receive_messages(
 
     if (received == 0)
     {
-        if (*response_length > 0)
+        if (*response_length > 0 || download_data)
         {
             fprintf(stderr, "\nServer closed during a response.\n");
             return -1;
@@ -87,11 +201,58 @@ static int receive_messages(
 
     for (ssize_t i = 0; i < received; i++)
     {
+        if (download_data)
+        {
+            size_t take = download_size - download_received;
+            size_t available = (size_t)(received - i);
+            if (take > available) take = available;
+            memcpy(download_data + download_received, buffer + i, take);
+            download_received += take;
+            download_activity = time(NULL);
+            i += (ssize_t)take - 1;
+            if (download_received == download_size) finish_download();
+            continue;
+        }
+
         char current = buffer[i];
 
         if (current == '\n')
         {
             response[*response_length] = '\0';
+
+            if (!strncmp(response, "OK REGISTERED ", 14))
+            {
+                char name[32], tag[32], extra;
+                if (sscanf(response + 14, "%31s %31s %c", name, tag, &extra) == 2 &&
+                    !strcmp(tag, NODE_ID) && file_component_valid(name))
+                {
+                    memcpy(local_username, name, strlen(name) + 1);
+                    local_registered = 1;
+                }
+            }
+
+            /* Recipient format: MSG FILE sender filename size, then raw bytes. */
+            if (!strncmp(response, "MSG FILE ", 9))
+            {
+                char size_text[32], extra;
+                if (!local_registered ||
+                    sscanf(response + 9, "%31s %127s %31s %c",
+                           download_sender, download_name, size_text, &extra) != 3 ||
+                    !file_component_valid(download_sender) ||
+                    !file_component_valid(download_name) ||
+                    file_size_parse(size_text, &download_size) != 0)
+                {
+                    fprintf(stderr, "Invalid incoming file header.\n");
+                    return -1;
+                }
+                download_data = malloc(download_size ? download_size : 1);
+                if (!download_data) return -1;
+                download_received = 0;
+                download_activity = time(NULL);
+                *response_length = 0;
+                if (!download_size) finish_download();
+                continue;
+            }
 
             printf("\n");
             display_response(response);
@@ -220,6 +381,7 @@ int main(int argc, char *argv[])
     printf("Commands: REGISTER <name>, LIST, BCAST <message>,\n");
     printf("          PMSG <username> <message>, JOIN <room>, LEAVE <room>,\n");
     printf("          ROOMS, RMSG <room> <message>, QUIT\n");
+    printf("Files: /send <user-or-room> <local-path> (max 1 MiB, no spaces in path)\n");
     printf("Room example: JOIN study, then RMSG study Hello everyone\n");
     printf("Join/leave notifications appear automatically as MSG JOIN/LEAVE.\n");
     printf("Press Ctrl+D on an empty line to disconnect locally.\n");
@@ -233,7 +395,7 @@ int main(int argc, char *argv[])
     char response[RESPONSE_SIZE];
     size_t response_length = 0;
 
-    char output[OUTPUT_SIZE];
+    static char output[OUTPUT_SIZE];
     size_t output_length = 0;
 
     int exit_status = EXIT_SUCCESS;
@@ -257,12 +419,13 @@ int main(int argc, char *argv[])
         int highest_fd = socket_fd > STDIN_FILENO
                          ? socket_fd : STDIN_FILENO;
 
+        struct timeval timeout = {1, 0};
         int ready = select(
             highest_fd + 1,
             &read_fds,
             &write_fds,
             NULL,
-            NULL
+            &timeout
         );
 
         if (ready == -1)
@@ -273,6 +436,13 @@ int main(int argc, char *argv[])
             }
 
             perror("select");
+            exit_status = EXIT_FAILURE;
+            break;
+        }
+
+        if (download_data && time(NULL) - download_activity >= 30)
+        {
+            fprintf(stderr, "Incoming file timed out; incomplete data discarded.\n");
             exit_status = EXIT_FAILURE;
             break;
         }
@@ -343,22 +513,14 @@ int main(int argc, char *argv[])
                     fprintf(stderr,
                             "Invalid or oversized command; not sent.\n");
                 }
-                else if (command_length + 1 >
-                         sizeof(output) - output_length)
-                {
-                    fprintf(stderr,
-                            "Outgoing queue full; command not sent.\n");
-                }
                 else
                 {
-                    memcpy(
-                        output + output_length,
-                        command,
-                        command_length
-                    );
-
-                    output_length += command_length;
-                    output[output_length++] = '\n';
+                    command[command_length] = '\0';
+                    if (queue_input(command, output, &output_length) == -1)
+                    {
+                        exit_status = EXIT_FAILURE;
+                        break;
+                    }
                 }
 
                 command_length = 0;
@@ -388,6 +550,7 @@ int main(int argc, char *argv[])
         exit_status = EXIT_FAILURE;
     }
 
+    free(download_data);
     printf("Client stopped.\n");
     return exit_status;
 }

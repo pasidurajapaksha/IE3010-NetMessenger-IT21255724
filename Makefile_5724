@@ -5,10 +5,10 @@ CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g
 
 all: server_5724 client_5724
 
-server_5724: server_5724.c config_5724.h
+server_5724: server_5724.c config_5724.h file_io_5724.h
 	$(CC) $(CFLAGS) server_5724.c -o server_5724
 
-client_5724: client_5724.c config_5724.h
+client_5724: client_5724.c config_5724.h file_io_5724.h
 	$(CC) $(CFLAGS) client_5724.c -o client_5724
 
 clean:
