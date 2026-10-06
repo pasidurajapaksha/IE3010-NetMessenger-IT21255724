@@ -1,5 +1,6 @@
 # NetMessenger Design Diary
 
+**Name:** Rajapaksha P. K.  
 **Registration Number:** IT21255724  
 **Module:** IE3010 — Network Programming
 
