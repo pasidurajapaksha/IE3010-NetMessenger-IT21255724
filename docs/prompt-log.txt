@@ -1,0 +1,549 @@
+NETMESSENGER - AI ASSISTANCE / PROMPT LOG
+
+Name: Rajapaksha P. K.
+Registration Number: IT21255724
+Module: IE3010 - Network Programming
+Project: NetMessenger: A Multi-Client Chat and File-Sharing Platform over TCP/IP
+
+
+PURPOSE OF AI USE
+
+During the development of NetMessenger, I used ChatGPT mainly as a technical
+support and reference tool while I was coding.
+
+I used it to ask questions about networking concepts, understand errors,
+confirm implementation approaches, and identify useful test cases.
+
+I compiled, executed, tested, and verified the application in my own Linux
+environment and checked the final behaviour against the assignment
+requirements.
+
+
+============================================================
+3 OCTOBER 2026 - ASSIGNMENT REQUIREMENTS
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked for help understanding the main requirements of the NetMessenger
+assignment and identifying the mandatory application features.
+
+Support received:
+The response helped summarise the required features such as registration,
+multiple clients, broadcast messaging, private messaging, rooms, file
+transfer, logging, and error handling.
+
+How I used the response:
+I used the explanation to organise the implementation into smaller stages and
+checked each stage against the assignment document.
+
+
+============================================================
+3 OCTOBER 2026 - PERSONALISED VALUES
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how the registration-specific values should be calculated from
+IT21255724.
+
+Support received:
+The calculation of the server port, Node ID, personalised filenames, log file
+name, and storage path was explained.
+
+How I used the response:
+I checked the values against the formulas in the assignment brief before using
+them in the project.
+
+Verified values included:
+
+Registration Number : IT21255724
+Server Port         : 11724
+Node ID             : NID:2557
+Server Source       : server_5724.c
+Client Source       : client_5724.c
+Makefile            : Makefile_5724
+Log File            : netmsg_IT21255724.log
+Storage Path        : ./storage/IT21255724/<sender_username>/<filename>
+
+
+============================================================
+3 OCTOBER 2026 - BASIC TCP SOCKET PROGRAMMING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about the normal steps required to create a TCP server and TCP
+client in C using BSD sockets.
+
+Support received:
+The use of socket(), bind(), listen(), accept(), connect(), send(), recv(),
+and close() was explained.
+
+How I used the response:
+I used the explanation as a reference while working on the initial server and
+client programs and then compiled and ran them to verify connectivity.
+
+
+============================================================
+3 OCTOBER 2026 - GIT / GITHUB ISSUE
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked why GitHub rejected a push because of an email privacy-related issue.
+
+Support received:
+The response explained how Git commit email information works and how a GitHub
+noreply address could be configured.
+
+How I used the response:
+I updated my local Git configuration and corrected the unpublished commit
+before pushing again.
+
+
+============================================================
+4 OCTOBER 2026 - TCP MESSAGE FRAMING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked why recv() should not be assumed to return exactly one complete command.
+
+Support received:
+The response explained that TCP is a byte-stream protocol and that a command
+may arrive in parts or several commands may arrive together.
+
+How I used the response:
+I used this explanation while working on per-client command buffering so that
+commands are processed only after a complete newline-terminated line is
+available.
+
+
+============================================================
+4 OCTOBER 2026 - CLIENT DISCONNECT HANDLING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked what the server should do when a connected client closes unexpectedly.
+
+Support received:
+The response explained the importance of checking recv() return values,
+closing the socket, removing the user from server state, and allowing the
+connection slot to be reused.
+
+How I used the response:
+I reviewed the disconnect handling in my program and later tested both graceful
+and unexpected client disconnections.
+
+
+============================================================
+5 OCTOBER 2026 - USER REGISTRATION
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about implementing unique username registration and returning
+the required NID-tagged server responses.
+
+Support received:
+The response helped clarify duplicate username checks and the required response
+format.
+
+How I used the response:
+I tested normal registration, duplicate usernames, invalid registration cases,
+and NID-tagged responses using the running application.
+
+
+============================================================
+5 OCTOBER 2026 - MULTIPLE CLIENTS AND SELECT()
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how one server process could handle several clients at the same time.
+
+Support received:
+The response explained the use of select() and file-descriptor sets for
+monitoring several sockets.
+
+How I used the response:
+I used the explanation while reviewing my concurrency approach and tested the
+completed server with at least five clients connected simultaneously.
+
+
+============================================================
+5 OCTOBER 2026 - LIST AND QUIT
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about maintaining the connected-user list and handling a clean
+QUIT command.
+
+Support received:
+The response helped clarify how registered users should be included in LIST
+and how state should be cleaned when a client leaves.
+
+How I used the response:
+I tested LIST output, graceful QUIT handling, leave notifications, and username
+reuse after disconnect.
+
+
+============================================================
+5 OCTOBER 2026 - BROADCAST MESSAGING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how broadcast messages should be routed according to the assignment
+protocol.
+
+Support received:
+The response clarified that the sender receives an OK response and all other
+registered clients receive the MSG BCAST message.
+
+How I used the response:
+I tested broadcast messaging with multiple connected clients and confirmed
+that the sender was not included as a broadcast recipient.
+
+
+============================================================
+5 OCTOBER 2026 - PRIVATE MESSAGING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about parsing a private-message target and handling a target
+user that does not exist.
+
+Support received:
+The response helped clarify target lookup, message parsing, and the
+USER_NOT_FOUND error case.
+
+How I used the response:
+I tested successful private messages, message isolation, and private messages
+to an unknown username.
+
+
+============================================================
+5 OCTOBER 2026 - PRESENCE NOTIFICATIONS
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked what message format could be used for the required user join and leave
+notifications because the assignment did not specify an exact syntax.
+
+Support received:
+A simple format using:
+
+MSG JOIN <username>
+MSG LEAVE <username>
+
+was discussed.
+
+How I used the response:
+I used this as the documented format in my application and tested registration,
+graceful leave, abrupt disconnect, and reconnection.
+
+
+============================================================
+5 OCTOBER 2026 - CHAT ROOMS
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about managing room membership and delivering room messages
+only to room members.
+
+Support received:
+The response helped clarify room creation, membership checks, room cleanup,
+and handling users who are not members of a room.
+
+How I used the response:
+I tested JOIN, LEAVE, ROOMS, RMSG, room-message isolation, and deletion of
+empty rooms.
+
+
+============================================================
+5 OCTOBER 2026 - FILE TRANSFER
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how SENDFILE should handle raw file bytes after the text header.
+
+Support received:
+The response explained that the server must read exactly the declared number
+of bytes and must not treat newline or NUL bytes inside the file as commands.
+
+How I used the response:
+I used the explanation while reviewing the file-transfer state in the server
+and tested both direct and room file transfers using the C client.
+
+
+============================================================
+5 OCTOBER 2026 - FILE STORAGE
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked questions about confirming the required personalised server storage
+path.
+
+Support received:
+The response helped verify the required directory structure.
+
+How I used the response:
+I checked the actual stored files under:
+
+./storage/IT21255724/<sender_username>/<filename>
+
+and captured the directory listing as assignment evidence.
+
+
+============================================================
+5 OCTOBER 2026 - FILE INTEGRITY
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how to verify that a transferred file was received without modification.
+
+Support received:
+Using SHA-256 hashes of the original, server-stored, and downloaded files was
+suggested.
+
+How I used the response:
+I ran sha256sum on the files and confirmed that the hashes were identical.
+
+
+============================================================
+5 OCTOBER 2026 - SERVER LOGGING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked what server activities should be recorded in the assignment log file.
+
+Support received:
+The response suggested recording important events such as connections,
+registrations, commands, errors, file transfers, and disconnections with
+timestamps.
+
+How I used the response:
+I checked the final server log and confirmed that runtime events were being
+written to netmsg_IT21255724.log.
+
+
+============================================================
+6 OCTOBER 2026 - TCP FRAMING TESTING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how I could test partial commands and multiple commands in the TCP
+stream.
+
+Support received:
+The response suggested using a raw TCP testing tool when precise control over
+writes was required.
+
+How I used the response:
+I used Ncat to test:
+
+1. A REGISTER command split into separate writes.
+2. Multiple commands supplied together.
+
+The server handled both cases correctly.
+
+
+============================================================
+6 OCTOBER 2026 - FILE SIZE ERROR TEST
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked how to test the server-side FILE_TOO_LARGE response because the normal
+C client already prevents files larger than the configured limit.
+
+Support received:
+The response suggested sending the protocol header directly using Ncat.
+
+How I used the response:
+I tested a declared file size larger than 1 MiB and confirmed:
+
+ERR 004 FILE_TOO_LARGE NID:2557
+
+
+============================================================
+6 OCTOBER 2026 - ZERO-BYTE FILE TEST
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked whether a zero-byte file should also be checked as an edge case.
+
+Support received:
+The response suggested testing it through the normal C application.
+
+How I used the response:
+I created a zero-byte file and sent it using the /send command.
+
+I confirmed that both the server-stored copy and recipient copy were exactly
+0 bytes.
+
+
+============================================================
+6 OCTOBER 2026 - BINARY FILE TEST
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked for a useful way to check that binary bytes do not interfere with the
+text command protocol.
+
+Support received:
+The response suggested using a small binary file containing values such as
+NUL and newline bytes.
+
+How I used the response:
+I transferred the binary file using the normal C application and compared the
+SHA-256 hashes of:
+
+- the original file;
+- the server-stored file;
+- the recipient-downloaded file.
+
+All three hashes matched.
+
+
+============================================================
+6 OCTOBER 2026 - CLEAN BUILD CHECK
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked what final compilation check should be performed before submission.
+
+Support received:
+The response suggested doing a clean rebuild using the personalised Makefile.
+
+How I used the response:
+I ran:
+
+make -f Makefile_5724 clean
+make -f Makefile_5724
+
+The server and client compiled without warnings or errors using:
+
+-Wall -Wextra -Wpedantic
+
+
+============================================================
+6 OCTOBER 2026 - README AND DOCUMENTATION REVIEW
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked what information the assignment specifically requires in README.md and
+what documentation should remain in the repository.
+
+Support received:
+The assignment requirements were reviewed and the difference between README
+content, report content, prompt log, design diary, and reflection was
+explained.
+
+How I used the response:
+I updated README.md with the required personalised information, build
+instructions, and a simple application user guide.
+
+I also removed temporary development documentation that was not required for
+the final project.
+
+
+============================================================
+6 OCTOBER 2026 - SCREENSHOT AND REPORT EVIDENCE
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked whether the screenshots I had captured covered the assignment evidence
+requirements and what additional source-code evidence was useful.
+
+Support received:
+The response helped identify important code areas such as concurrency,
+registration, messaging, rooms, file framing, disconnect handling, and
+logging.
+
+How I used the response:
+I displayed the relevant sections of my source code and captured readable
+screenshots for use in the Implementation Report.
+
+
+============================================================
+SUMMARY
+============================================================
+
+ChatGPT was used mainly as a technical reference and support tool while I was
+developing NetMessenger.
+
+I used it to ask questions about C socket programming, TCP behaviour, error
+handling, testing, and assignment documentation.
+
+The actual application was compiled, executed, and tested in my own Linux
+environment.
+
+I checked the behaviour of the system using multiple clients, messaging tests,
+room tests, file-transfer tests, server logs, TCP robustness tests, SHA-256
+file-integrity checks, and clean compilation before finalising the project.

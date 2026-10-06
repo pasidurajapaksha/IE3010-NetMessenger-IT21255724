@@ -2,20 +2,19 @@
 
 ## Multi-Client Chat and File-Sharing Platform over TCP/IP
 
-NetMessenger is a TCP client-server application developed in C for the **IE3010 — Network Programming** assignment.
-
-The application uses the BSD sockets API and supports multiple simultaneous clients, messaging, chat rooms, file sharing, presence notifications, graceful disconnect handling, error handling, and timestamped server-side logging.
-
----
-
-## Student Information
-
+**Module:** IE3010 - Network Programming  
+**Name:** Rajapaksha P. K.  
 **Registration Number:** IT21255724  
-**Module:** IE3010 — Network Programming
 
 ---
 
 ## Personalised Configuration
+
+### Registration Number
+
+```text
+IT21255724
+```
 
 ### Server Port
 
@@ -31,7 +30,11 @@ The server port is calculated as:
 6000 + 5724 = 11724
 ```
 
-**Server Port:** `11724`
+Therefore, the server listens on:
+
+```text
+TCP Port 11724
+```
 
 ### Node ID
 
@@ -41,83 +44,83 @@ The numeric part of the registration number is:
 21255724
 ```
 
-Digits 3–6 are:
+Digits 3-6 are:
 
 ```text
 2557
 ```
 
-Therefore:
+Therefore, the personalised Node ID is:
 
-**Node ID:** `NID:2557`
+```text
+NID:2557
+```
 
-### Personalised File Names and Paths
+### Personalised Files and Paths
 
-| Item | Personalised Value |
-|---|---|
-| Registration Number | `IT21255724` |
-| Server Port | `11724` |
-| Server Source | `server_5724.c` |
-| Client Source | `client_5724.c` |
-| Makefile | `Makefile_5724` |
-| Node ID | `NID:2557` |
-| Log File | `netmsg_IT21255724.log` |
-| File Storage Path | `./storage/IT21255724/<sender_username>/<filename>` |
-| Submission Archive | `IE3010_IT21255724.zip` |
-
-Additional source headers used by the project:
-
-- `config_5724.h`
-- `file_io_5724.h`
+```text
+Server source : server_5724.c
+Client source : client_5724.c
+Makefile      : Makefile_5724
+Log file      : netmsg_IT21255724.log
+Storage path  : ./storage/IT21255724/<sender_username>/<filename>
+```
 
 ---
 
 ## Implemented Features
 
-NetMessenger supports:
+NetMessenger implements the required TCP client/server functionality:
 
-- User registration with unique usernames
-- Listing connected users
+- Multiple simultaneous clients
+- Unique username registration
+- User join and leave notifications
+- Connected-user listing
 - Broadcast messaging
 - Private messaging
-- Join and leave presence notifications
-- Chat room creation and membership
+- Chat-room creation and joining
 - Room listing
 - Room messaging
+- Leaving chat rooms
 - Direct file transfer
 - Room file transfer
-- Binary file transfer over TCP
-- Graceful client disconnect using `QUIT`
-- Unexpected client disconnect cleanup
+- Server-side file storage
 - Timestamped server logging
-- Personalised server-side file storage
-- Multiple simultaneous clients
+- Graceful client disconnect handling
+- Unexpected client disconnect handling
+- Protocol error handling
+- TCP command framing
+- Exact-byte binary file transfer
 
-The server uses a `select()`-based concurrency model and supports at least five simultaneous clients.
+The server uses I/O multiplexing with `select()` to handle multiple connected clients in a single server process.
 
 ---
 
 # Build Instructions
 
-The project is designed to compile using GCC on Linux.
+The application is written in C using the standard BSD sockets API and can be compiled using the personalised Makefile.
 
-## Clean Previous Build
+## Build
 
-```bash
-make -f Makefile_5724 clean
-```
-
-## Build Server and Client
+From the project directory, run:
 
 ```bash
 make -f Makefile_5724
 ```
 
-This creates:
+This produces:
 
 ```text
 server_5724
 client_5724
+```
+
+## Clean
+
+To remove the compiled executables:
+
+```bash
+make -f Makefile_5724 clean
 ```
 
 ---
@@ -126,7 +129,7 @@ client_5724
 
 ## 1. Start the Server
 
-Open a terminal in the project directory and run:
+Run:
 
 ```bash
 ./server_5724
@@ -138,8 +141,6 @@ The server listens on the personalised TCP port:
 11724
 ```
 
-Keep this terminal running while clients connect.
-
 ---
 
 ## 2. Start a Client
@@ -147,85 +148,60 @@ Keep this terminal running while clients connect.
 Open another terminal and run:
 
 ```bash
-./client_5724 127.0.0.1
+./client_5724 127.0.0.1 11724
 ```
 
-Use `127.0.0.1` when the server and client are running on the same computer.
-
-If the client is running on another computer, replace `127.0.0.1` with the IPv4 address of the server.
-
-Example:
-
-```bash
-./client_5724 192.168.1.10
-```
-
-Multiple client terminals can be opened at the same time.
+Additional clients can be started in separate terminals using the same command.
 
 ---
 
 ## 3. Register a Username
 
-Registration must be completed before using the other application commands.
+Registration must be the first protocol command sent after connecting.
+
+Syntax:
+
+```text
+REGISTER <username>
+```
 
 Example:
 
 ```text
-REGISTER Pasidu
+REGISTER user1
 ```
 
-Successful response:
+A successful registration returns:
 
 ```text
-Server: OK REGISTERED Pasidu NID:2557
-```
-
-Each connected client must use a unique username.
-
-If the username is already in use:
-
-```text
-Server: ERR 001 USERNAME_TAKEN NID:2557
+OK REGISTERED user1 NID:2557
 ```
 
 ---
 
-# Application Commands
+## Application Commands
 
-| Command | Description | Example |
-|---|---|---|
-| `REGISTER <username>` | Register a unique username | `REGISTER Pasidu` |
-| `LIST` | List connected registered users | `LIST` |
-| `BCAST <message>` | Send a message to all other registered users | `BCAST Hello everyone` |
-| `PMSG <username> <message>` | Send a private message to one user | `PMSG Amal Hello Amal` |
-| `JOIN <room>` | Create or join a room | `JOIN study` |
-| `LEAVE <room>` | Leave a room | `LEAVE study` |
-| `ROOMS` | List active rooms | `ROOMS` |
-| `RMSG <room> <message>` | Send a message to room members | `RMSG study Hello team` |
-| `/send <target> <path>` | Send a file to a user or room | `/send Amal /tmp/test.txt` |
-| `QUIT` | Disconnect cleanly from the server | `QUIT` |
-
----
-
-## 4. List Connected Users
-
-Enter:
+### List Connected Users
 
 ```text
 LIST
 ```
 
-Example response:
+Successful response:
 
 ```text
-OK USERS Amal,Nimal,Pasidu NID:2557
+OK USERS <comma-separated-users> NID:2557
 ```
 
 ---
 
-## 5. Send a Broadcast Message
+### Broadcast Message
 
-Enter:
+```text
+BCAST <message>
+```
+
+Example:
 
 ```text
 BCAST Hello everyone
@@ -237,20 +213,24 @@ The sender receives:
 OK SENT NID:2557
 ```
 
-Other registered clients receive:
+Other connected clients receive:
 
 ```text
-MSG BCAST Pasidu Hello everyone
+MSG BCAST <sender> <message>
 ```
 
 ---
 
-## 6. Send a Private Message
-
-Enter:
+### Private Message
 
 ```text
-PMSG Amal Hello Amal
+PMSG <username> <message>
+```
+
+Example:
+
+```text
+PMSG user2 Hello
 ```
 
 The sender receives:
@@ -259,72 +239,60 @@ The sender receives:
 OK SENT NID:2557
 ```
 
-Amal receives:
+The target receives:
 
 ```text
-MSG PRIV Pasidu Hello Amal
-```
-
-If the target user does not exist:
-
-```text
-ERR 002 USER_NOT_FOUND NID:2557
+MSG PRIV <sender> <message>
 ```
 
 ---
 
-## 7. Create or Join a Room
-
-Enter:
+### Join or Create a Room
 
 ```text
-JOIN study
+JOIN <room>
+```
+
+Example:
+
+```text
+JOIN testroom
 ```
 
 Successful response:
 
 ```text
-OK JOINED study NID:2557
+OK JOINED testroom NID:2557
 ```
 
-If the room does not already exist, the server creates it automatically.
-
-Other users can join the same room using the same command:
-
-```text
-JOIN study
-```
+If the room does not already exist, it is created automatically.
 
 ---
 
-## 8. List Rooms
-
-Enter:
+### List Rooms
 
 ```text
 ROOMS
 ```
 
-Example response:
+Successful response:
 
 ```text
-OK ROOMS study NID:2557
+OK ROOMS <comma-separated-room-names> NID:2557
 ```
 
 ---
 
-## 9. Send a Room Message
-
-First join the room:
+### Send a Room Message
 
 ```text
-JOIN study
+RMSG <room> <message>
 ```
 
-Then send a message:
+Example:
 
 ```text
-RMSG study Hello everyone
+RMSG testroom Hello room
 ```
 
 The sender receives:
@@ -336,128 +304,90 @@ OK SENT NID:2557
 Room members receive:
 
 ```text
-MSG ROOM study Pasidu Hello everyone
+MSG ROOM <room> <sender> <message>
 ```
-
-Only members of the room receive the room message.
 
 ---
 
-## 10. Leave a Room
-
-Enter:
+### Leave a Room
 
 ```text
-LEAVE study
+LEAVE <room>
+```
+
+Example:
+
+```text
+LEAVE testroom
 ```
 
 Successful response:
 
 ```text
-OK LEFT study NID:2557
+OK LEFT testroom NID:2557
 ```
-
-When the final member leaves, the empty room is removed.
 
 ---
 
-## 11. Send a File to a User
+## File Transfer
 
-The client provides the `/send` command for file transfer.
-
-Syntax:
+The protocol file-transfer command is:
 
 ```text
-/send <username> <local-path>
+SENDFILE <target> <filename> <filesize>
 ```
+
+The command header is immediately followed by exactly `<filesize>` raw bytes.
+
+The client provides the following convenient command:
+
+```text
+/send <target> <filepath>
+```
+
+### Send a File to a User
 
 Example:
 
 ```text
-/send Amal /tmp/test.txt
+/send user2 /tmp/test.bin
 ```
 
-The client displays output similar to:
-
-```text
-Queued file: test.txt -> Amal
-```
-
-After the server receives the file successfully:
-
-```text
-Server: OK FILE_RECEIVED test.txt NID:2557
-```
-
-The receiving client stores the file under its `downloads` directory.
+### Send a File to a Room
 
 Example:
 
 ```text
-downloads/Amal/Pasidu/test.txt
+/send testroom /tmp/test.bin
 ```
 
-The server stores the received file under the personalised storage path:
+A successful transfer returns:
 
 ```text
-storage/IT21255724/Pasidu/test.txt
+OK FILE_RECEIVED <filename> NID:2557
 ```
-
-The maximum accepted file size is **1 MiB**.
 
 ---
 
-## 12. Send a File to a Room
+## Presence Notifications
 
-First, the users should join the room:
-
-```text
-JOIN study
-```
-
-Then send a file using the room name as the target:
-
-```text
-/send study /tmp/report.pdf
-```
-
-The file is delivered to the active members of the room.
-
----
-
-## 13. Presence Notifications
-
-When a user registers successfully, connected registered clients receive:
+When a registered user connects, other clients may receive:
 
 ```text
 MSG JOIN <username>
 ```
 
-Example:
-
-```text
-MSG JOIN Amal
-```
-
-When a registered user disconnects:
+When a registered user disconnects, other clients may receive:
 
 ```text
 MSG LEAVE <username>
 ```
 
-Example:
-
-```text
-MSG LEAVE Amal
-```
-
-The assignment requires presence notifications but does not specify their exact message format. `MSG JOIN` and `MSG LEAVE` are the formats used by this implementation.
-
 ---
 
-## 14. Quit the Application
+## Quit
 
-To disconnect cleanly, enter:
+To disconnect cleanly:
 
 ```text
 QUIT
@@ -469,39 +399,13 @@ The server responds:
 OK BYE NID:2557
 ```
 
-The client then closes the connection.
-
-The client can also be closed locally by pressing `Ctrl+D` on an empty input line.
+and then closes the client connection.
 
 ---
 
-# File Transfer Notes
+# File Storage
 
-The required client-to-server file-transfer protocol is:
-
-```text
-SENDFILE <target> <filename> <filesize>
-<exactly filesize raw bytes>
-```
-
-The raw file bytes immediately follow the newline terminating the `SENDFILE` command.
-
-The server reads exactly the declared number of bytes before returning to normal command processing.
-
-This allows binary files containing newline, NUL, and other non-text bytes to be transferred correctly.
-
-The server-to-client file delivery format used by this implementation is:
-
-```text
-MSG FILE <sender> <filename> <filesize>
-<exactly filesize raw bytes>
-```
-
----
-
-# Server Storage
-
-Files received by the server are stored using the required personalised path:
+The server stores transferred files using the personalised storage structure:
 
 ```text
 ./storage/IT21255724/<sender_username>/<filename>
@@ -510,27 +414,34 @@ Files received by the server are stored using the required personalised path:
 Example:
 
 ```text
-./storage/IT21255724/Pasidu/report.pdf
+./storage/IT21255724/user1/test.bin
+```
+
+Files received by the client are stored under:
+
+```text
+./downloads/<recipient_username>/<sender_username>/<filename>
 ```
 
 ---
 
 # Server Log
 
-The server writes timestamped activity to:
+Server activity is written to:
 
 ```text
 netmsg_IT21255724.log
 ```
 
-The log records events such as:
+The log records timestamped events such as:
 
-- client connections
-- registrations
-- commands
-- protocol errors
-- file transfers
-- client disconnections
+- Connections
+- Registrations
+- Commands
+- Messaging activity
+- File transfers
+- Errors
+- Disconnections
 
 ---
 
@@ -543,17 +454,7 @@ config_5724.h
 file_io_5724.h
 Makefile_5724
 README.md
-docs/
-```
-
-Runtime files such as compiled executables, `downloads/`, `storage/`, and the server log are excluded from normal Git tracking.
-
----
-
-# Submission Archive
-
-The personalised submission archive name is:
-
-```text
-IE3010_IT21255724.zip
+docs/design-diary.md
+docs/prompt-log.txt
+docs/reflection.txt
 ```

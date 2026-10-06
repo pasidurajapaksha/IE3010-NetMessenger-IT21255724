@@ -53,3 +53,12 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# NetMessenger Linux build outputs
+/server_5724
+/client_5724
+
+# NetMessenger runtime-generated data
+/downloads/
+/storage/
+/netmsg_IT21255724.log

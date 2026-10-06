@@ -1,0 +1,17 @@
+NETMESSENGER - STRUCTURED REFLECTION
+
+Name: Rajapaksha P. K.
+Registration Number: IT21255724
+Module: IE3010 - Network Programming
+Project: NetMessenger: A Multi-Client Chat and File-Sharing Platform over TCP/IP
+
+
+During the development of NetMessenger, I used ChatGPT mainly as a support tool while I was coding. I used it at several stages to clarify networking concepts, understand errors, check whether my approach matched the assignment specification, and identify useful test cases. I did not use AI as a replacement for compiling, running, debugging, or testing the program. These activities were carried out in my own Linux environment.
+
+One area where ChatGPT was useful was explaining TCP stream behaviour. Initially, it was important to understand that one recv() call does not necessarily correspond to one complete command. The explanation of partial messages and multiple commands arriving in one buffer helped me improve my understanding of command framing. It was also useful when I was reviewing select()-based concurrency, client disconnect handling, and the SENDFILE requirement where the server must read an exact number of raw bytes.
+
+AI suggestions still had to be checked carefully. Some advice was general and had to be adapted to the way my own server stored users, rooms, and client state. During testing, one file-transfer test returned USER_NOT_FOUND because the intended recipient was not connected. This showed that I needed to check the actual runtime state rather than assuming a suggested test would automatically produce the expected result. I repeated the test with the correct setup. I also rejected or adjusted suggestions that did not match the fixed protocol or that added unnecessary complexity.
+
+The most important part of the assignment for me was verifying the implementation myself. I tested multiple simultaneous clients, registration, broadcast and private messaging, rooms, disconnect handling, direct and room file transfer, zero-byte files, oversized-file rejection, and binary file transfer. I also used SHA-256 hashes to confirm that transferred files were not modified.
+
+Through this assignment, I improved my understanding of TCP as a continuous byte stream rather than a message-based protocol. I also gained a better understanding of I/O multiplexing with select(), per-client state management, protocol parsing, cleanup after unexpected disconnections, and handling text commands together with raw binary file data. The testing stage showed me the importance of verifying assumptions with actual network behaviour instead of relying only on what the code appears to do.
