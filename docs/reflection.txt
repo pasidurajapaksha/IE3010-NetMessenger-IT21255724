@@ -6,12 +6,25 @@ Module: IE3010 - Network Programming
 Project: NetMessenger: A Multi-Client Chat and File-Sharing Platform over TCP/IP
 
 
-During the development of NetMessenger, I used ChatGPT mainly as a support tool while I was coding. I used it at several stages to clarify networking concepts, understand errors, check whether my approach matched the assignment specification, and identify useful test cases. I did not use AI as a replacement for compiling, running, debugging, or testing the program. These activities were carried out in my own Linux environment.
+1. Which AI tools, if any, did you use, and at which stages of the work?
 
-One area where ChatGPT was useful was explaining TCP stream behaviour. Initially, it was important to understand that one recv() call does not necessarily correspond to one complete command. The explanation of partial messages and multiple commands arriving in one buffer helped me improve my understanding of command framing. It was also useful when I was reviewing select()-based concurrency, client disconnect handling, and the SENDFILE requirement where the server must read an exact number of raw bytes.
+I used ChatGPT mainly as a technical support tool while developing NetMessenger. I used it when I needed clarification about networking concepts, TCP behaviour, error handling, testing methods, and assignment requirements. I also asked questions while working on areas such as TCP command framing, select()-based multi-client handling, file transfer, disconnect handling, and final testing. I compiled, executed, debugged, and tested the application in my own Linux environment before accepting any changes or conclusions.
 
-AI suggestions still had to be checked carefully. Some advice was general and had to be adapted to the way my own server stored users, rooms, and client state. During testing, one file-transfer test returned USER_NOT_FOUND because the intended recipient was not connected. This showed that I needed to check the actual runtime state rather than assuming a suggested test would automatically produce the expected result. I repeated the test with the correct setup. I also rejected or adjusted suggestions that did not match the fixed protocol or that added unnecessary complexity.
 
-The most important part of the assignment for me was verifying the implementation myself. I tested multiple simultaneous clients, registration, broadcast and private messaging, rooms, disconnect handling, direct and room file transfer, zero-byte files, oversized-file rejection, and binary file transfer. I also used SHA-256 hashes to confirm that transferred files were not modified.
+2. What did the AI do well? Where did it get things wrong or mislead you?
 
-Through this assignment, I improved my understanding of TCP as a continuous byte stream rather than a message-based protocol. I also gained a better understanding of I/O multiplexing with select(), per-client state management, protocol parsing, cleanup after unexpected disconnections, and handling text commands together with raw binary file data. The testing stage showed me the importance of verifying assumptions with actual network behaviour instead of relying only on what the code appears to do.
+ChatGPT was useful for explaining networking concepts in a simple way. In particular, the explanation that TCP is a continuous byte stream helped me understand why one recv() call cannot be assumed to contain exactly one complete command. It was also useful for suggesting additional edge-case tests such as partial commands, zero-byte files, binary files, and oversized file requests.
+
+However, AI suggestions still needed to be checked against the actual application state. For example, during one file-transfer test I received USER_NOT_FOUND because the intended recipient was not connected. The test setup had to be corrected before the expected result could be verified. Some suggestions were also more general than necessary and had to be adapted to my own implementation.
+
+
+3. What did you change, add, or reject from any AI output, and why?
+
+I did not automatically apply every suggestion. I compared suggestions with the assignment specification and with the structure of my own program. I adjusted ideas where they did not exactly match my client state, room management, file-transfer flow, or fixed protocol requirements. I also avoided unnecessary additions that were outside the assignment scope. Testing was used to confirm whether an approach actually worked before I kept it in the final project.
+
+
+4. What did you learn about your own understanding of network programming through completing this assignment?
+
+The assignment improved my understanding of TCP socket programming significantly. I learned that TCP does not preserve application message boundaries and that proper buffering is required for partial and combined commands. I also gained practical experience with select(), per-client state management, username and room tracking, graceful and unexpected disconnects, protocol parsing, and transferring raw binary data over the same connection used for text commands.
+
+The testing stage was especially useful because it showed me the importance of validating assumptions using real network behaviour. Verifying file transfers with SHA-256 hashes and testing multiple simultaneous clients gave me more confidence in understanding how the complete client-server system works.
