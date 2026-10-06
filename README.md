@@ -91,6 +91,7 @@ NetMessenger implements the required TCP client/server functionality:
 - Protocol error handling
 - TCP command framing
 - Exact-byte binary file transfer
+- Basic per-client chat-message rate limiting
 
 The server uses I/O multiplexing with `select()` to handle multiple connected clients in a single server process.
 
@@ -148,7 +149,7 @@ The server listens on the personalised TCP port:
 Open another terminal and run:
 
 ```bash
-./client_5724 127.0.0.1 11724
+./client_5724 127.0.0.1
 ```
 
 Additional clients can be started in separate terminals using the same command.
@@ -371,13 +372,13 @@ OK FILE_RECEIVED <filename> NID:2557
 
 ## Presence Notifications
 
-When a registered user connects, other clients may receive:
+When a registered user connects, clients receive:
 
 ```text
 MSG JOIN <username>
 ```
 
-When a registered user disconnects, other clients may receive:
+When a registered user disconnects, clients receive:
 
 ```text
 MSG LEAVE <username>
@@ -400,6 +401,28 @@ OK BYE NID:2557
 ```
 
 and then closes the client connection.
+
+---
+
+## Optional Feature
+
+The server includes basic per-client rate limiting for chat messages.
+
+Rate limiting applies to:
+
+- `BCAST`
+- `PMSG`
+- `RMSG`
+
+Each client can send up to 10 chat messages within a 5-second window.
+
+If the limit is exceeded, the server returns:
+
+```text
+ERR 023 RATE_LIMITED NID:2557
+```
+
+The limit resets automatically after five seconds.
 
 ---
 

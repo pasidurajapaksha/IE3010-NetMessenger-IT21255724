@@ -42,10 +42,12 @@ Received files are stored under:
 
 I also added timestamped server logging to `netmsg_IT21255724.log`.
 
-## 6 October 2026 — Final Testing
+## 6 October 2026 — Testing and Optional Extension
 
 I completed integration and robustness testing. The project compiled cleanly with `-Wall -Wextra -Wpedantic`.
 
-Testing included five simultaneous clients, messaging, rooms, presence, direct and room file transfer, graceful and abrupt disconnects, duplicate usernames, error handling, partial TCP commands, multiple commands in one input burst, zero-byte files, oversized-file rejection, and binary file transfer.
+Testing included five simultaneous clients, messaging, rooms, presence, direct and room file transfer, graceful and abrupt disconnects, duplicate usernames, error handling, partial TCP commands, multiple commands in one input burst, zero-byte files, oversized-file rejection, interrupted transfers, and binary file transfer. SHA-256 hashes of the original binary file, server-stored copy, and recipient-downloaded copy were identical.
 
-SHA-256 hashes of the original binary file, server-stored copy, and recipient-downloaded copy were identical, confirming byte-for-byte file integrity.
+After the mandatory functionality was stable, I implemented basic per-client rate limiting for `BCAST`, `PMSG`, and `RMSG` on a separate Git branch. A client may submit up to 10 chat-message requests within a five-second window; further requests receive `ERR 023 RATE_LIMITED NID:2557` until the window resets.
+
+Before merging the optional feature, I ran a full automated regression and smoke test. I repeated the same test after merging into `main`. The final result was `19 PASS / 0 FAIL / 19 TOTAL`.

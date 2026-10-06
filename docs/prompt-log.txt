@@ -532,6 +532,93 @@ screenshots for use in the Implementation Report.
 
 
 ============================================================
+6 OCTOBER 2026 - OPTIONAL RATE LIMITING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked for technical support selecting a low-risk optional extension after the
+mandatory functionality was complete and how basic flood protection could be
+added without interfering with the required protocol and file-transfer logic.
+
+Support received:
+Per-client rate limiting was discussed for the chat-message commands BCAST,
+PMSG, and RMSG.
+
+The selected behaviour was:
+
+- Allow up to 10 chat-message requests per client within a five-second window.
+- Return ERR 023 RATE_LIMITED NID:2557 when the limit is exceeded.
+- Keep REGISTER, LIST, JOIN, LEAVE, ROOMS, SENDFILE, and QUIT outside the
+  chat-message rate limit.
+- Maintain rate-limit state independently for each connected client.
+
+How I used the response:
+I developed and reviewed the change on a separate Git branch named
+optional-rate-limit rather than modifying the main branch immediately.
+
+I tested a burst of 11 broadcast messages. The first 10 were accepted and the
+11th returned:
+
+ERR 023 RATE_LIMITED NID:2557
+
+After waiting for the five-second rate-limit window to reset, another
+broadcast message was accepted successfully.
+
+
+============================================================
+6 OCTOBER 2026 - AUTOMATED REGRESSION AND SMOKE TESTING
+============================================================
+
+Tool:
+ChatGPT
+
+Prompt / Question:
+Asked for a comprehensive automated QA and smoke-test procedure before merging
+the optional rate-limiting branch into main.
+
+Support received:
+A test approach was provided to exercise the mandatory protocol and important
+edge cases, including:
+
+- strict compilation and Makefile build;
+- commands before registration;
+- partial TCP commands and multiple commands in one input stream;
+- presence notifications;
+- malformed commands;
+- five simultaneous clients;
+- duplicate usernames;
+- broadcast and private messages;
+- rooms and room isolation;
+- abrupt disconnect cleanup;
+- binary and zero-byte direct file transfer;
+- room file transfer;
+- oversized and interrupted transfers;
+- BCAST, PMSG, and RMSG rate limiting;
+- operation through the normal C client;
+- server logging and continued server operation.
+
+How I used the response:
+I ran the full test suite on the optional-rate-limit branch before merging.
+
+The result was:
+
+QA SUMMARY: 19 PASS / 0 FAIL / 19 TOTAL
+
+After the rate-limiting commit was merged into main, I ran the same regression
+suite again.
+
+The final merged main branch also produced:
+
+QA SUMMARY: 19 PASS / 0 FAIL / 19 TOTAL
+
+This confirmed that the optional extension did not break the tested mandatory
+application functionality.
+
+
+============================================================
 SUMMARY
 ============================================================
 
@@ -539,11 +626,14 @@ ChatGPT was used mainly as a technical reference and support tool while I was
 developing NetMessenger.
 
 I used it to ask questions about C socket programming, TCP behaviour, error
-handling, testing, and assignment documentation.
+handling, testing, optional rate limiting, and assignment documentation.
 
-The actual application was compiled, executed, and tested in my own Linux
-environment.
+I compiled, executed, and tested the application in my own Linux environment.
 
 I checked the behaviour of the system using multiple clients, messaging tests,
 room tests, file-transfer tests, server logs, TCP robustness tests, SHA-256
-file-integrity checks, and clean compilation before finalising the project.
+file-integrity checks, rate-limit testing, clean compilation, and a final
+automated regression and smoke-test suite.
+
+The completed merged version passed all 19 tests in the final automated QA
+run.
