@@ -19,6 +19,9 @@
 #define COMMAND_SIZE 1024
 #define OUTPUT_SIZE FILE_QUEUE_SIZE
 
+#define RATE_LIMIT_MESSAGES 10U
+#define RATE_LIMIT_WINDOW_SECONDS 5
+
 /* Each client has independent registration and buffering state. */
 typedef struct
 {
@@ -27,6 +30,10 @@ typedef struct
     int close_after_output;
     int drop_pending;
     unsigned long session_id;
+
+    /* Optional extension: per-client chat flood protection. */
+    time_t rate_window_start;
+    unsigned int rate_message_count;
 
     /* Bounded in-memory upload; disk publication happens only on completion. */
     unsigned char *file_data;
@@ -167,6 +174,34 @@ static int queue_response(Client *client, const char *response)
     client->output_length += length;
 
     return 0;
+}
+
+/* Optional extension: allow at most 10 accepted chat messages per 5-second
+   window for each client. Non-chat commands and invalid requests are not
+   charged against the allowance. */
+static int allow_chat_message(Client *client)
+{
+    time_t now = time(NULL);
+
+    if (client->rate_window_start == 0 ||
+        now < client->rate_window_start ||
+        now - client->rate_window_start >= RATE_LIMIT_WINDOW_SECONDS)
+    {
+        client->rate_window_start = now;
+        client->rate_message_count = 0;
+    }
+
+    if (client->rate_message_count >= RATE_LIMIT_MESSAGES)
+    {
+        log_event("RATE_LIMIT fd=%d user=%s count=%u",
+                  client->fd,
+                  client->registered ? client->username : "unregistered",
+                  client->rate_message_count);
+        return 0;
+    }
+
+    client->rate_message_count++;
+    return 1;
 }
 
 /* The brief requires presence notifications but does not define their syntax.
@@ -492,6 +527,12 @@ static int handle_room_message(Client *sender, const char *arguments)
             "ERR 016 NOT_ROOM_MEMBER " NODE_ID "\n");
     }
 
+    if (!allow_chat_message(sender))
+    {
+        return queue_response(sender,
+            "ERR 023 RATE_LIMITED " NODE_ID "\n");
+    }
+
     char forwarded[1200];
     int written = snprintf(forwarded, sizeof(forwarded),
                            "MSG ROOM %s %s %s\n", name,
@@ -601,6 +642,14 @@ static int handle_broadcast(Client *sender, const char *message)
         );
     }
 
+    if (!allow_chat_message(sender))
+    {
+        return queue_response(
+            sender,
+            "ERR 023 RATE_LIMITED " NODE_ID "\n"
+        );
+    }
+
     char forwarded[1200];
 
     int written = snprintf(
@@ -695,6 +744,12 @@ static int handle_private(Client *sender, const char *arguments)
     {
         return queue_response(sender,
             "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+    }
+
+    if (!allow_chat_message(sender))
+    {
+        return queue_response(sender,
+            "ERR 023 RATE_LIMITED " NODE_ID "\n");
     }
 
     char forwarded[1200];
